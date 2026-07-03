@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Database (local diagnostic-mode SQLite, incl. real registered faces)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Images (test assets, registered face crops — biometric PII)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.webp
+
+# Env / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+.claude/
+*.swp

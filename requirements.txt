@@ -1,0 +1,14 @@
+dlib==20.0.1
+face_recognition_models==0.3.0
+numpy==2.4.6
+onnxruntime==1.27.0
+opencv-python-headless==4.13.0.92
+requests==2.34.2
+protobuf==7.35.1
+flatbuffers==25.12.19
+certifi==2026.6.17
+urllib3==2.7.0
+charset-normalizer==3.4.7
+idna==3.18
+pyyaml==6.0.3
+setuptools==70.3.0

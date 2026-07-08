@@ -49,6 +49,26 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 ---
 
+## Quick start
+
+Recognise someone against the mock server in four commands (assumes `am-mock-server/` and `am-mock-client/` sit side by side):
+
+```bash
+# 1. Start the mock server (other repo) — installs Podman, builds, runs on :8000
+cd ../am-mock-server && ./run.sh
+#    ...then register a face at http://localhost:8000 (see that repo's "How to use")
+
+# 2. Set up this client — native venv + light deps, no dlib, no sudo
+cd ../am-mock-client && ./setup.sh
+
+# 3. Identify a photo of the person you registered
+.venv/bin/python client.py --config config.mock-server.yaml --server photo.jpg
+```
+
+Expect `>>> Recognised: <name>`. Step-by-step detail (and the offline/diagnostic flow) is under [`## How to use`](#how-to-use) below; full setup options under [`### Setup`](#setup).
+
+---
+
 ## Known Issues & Fixes (testing against the mock server)
 
 - **`ServerClient.identify()` read dead schema fields**: was falling back to `visitor_name`/`similarity`, neither of which exist in the server's actual `IdentifyResponse`. Fixed: now reads `name`/`confidence`/`distance` directly and logs all three, instead of merging `distance` (lower=better) into a `sim` label that implied higher=better. Covered by `tests/test_server_client.py`.
@@ -88,13 +108,28 @@ Am-FaceRecognition-Client/
 ## Requirements
 
 - Python 3.13
-- dlib 20.0.1 (built from source via zig)
-- dlib model files (provided by `face_recognition_models` package)
-- YuNet + MobileFaceNet ONNX models in `models/` (bundled in this repo; same files as `mock-server/models/`) — only needed if using the yunet/mobilefacenet alternate pairing
+- YuNet + MobileFaceNet ONNX models in `models/` (bundled in this repo; same files as `mock-server/models/`) — used by the yunet/mobilefacenet pairing, which is what the mock server needs
+- dlib 20.0.1 + its model files (from the `face_recognition_models` package) — **only** for the `dlib` pairing (real `am-master-server`), not for the mock-server path. `client.py` imports dlib lazily, so the client runs fine without it when using the yunet/mobilefacenet pairing (see `./setup.sh` vs `./setup.sh --full`).
 
 ### Setup
 
-**Create the virtual environment:**
+**Quickest — `./setup.sh` (recommended):** bootstraps a native `.venv` and installs
+every dependency in one go. No manual pip steps, no `sudo`.
+
+```bash
+./setup.sh          # default: MOCK-SERVER path (light — no dlib)
+./setup.sh --full   # dlib / real am-master-server path
+```
+
+By default it installs **only** what the mock-server path (yunet + mobilefacenet,
+512-dim) needs — `onnxruntime` / `opencv` / `numpy` / `requests` / `pyyaml`. That
+path uses **no dlib**, so there's no ~15-min source compile and no C++ build tools
+required — ideal for testing against `iiith-cvit-am-mock-server`. Pass `--full` to
+add `dlib` (compiles from source, needs `cmake`/`g++`/BLAS) for the real-server
+`dlib` pairing. The script prefers `uv` and falls back to `python3 -m venv`; it's
+safe to re-run.
+
+**Manual alternative — create the virtual environment yourself:**
 
 ```bash
 uv venv --python 3.13 .venv
@@ -196,11 +231,49 @@ You can also use a different config file per run:
 > The mock server only implements the `yunet`/`mobilefacenet` (512-dim) pairing: `config.yaml`'s `dlib` default is correct for the real server, not this mock. See `config.mock-server.yaml`'s header comment for details.
 ---
 
-## Usage
+## How to use
 
 ```
 .venv/bin/python client.py [options] [image]
 ```
+
+### Tutorial A — identify someone via the mock server
+
+Prereq: the mock server is running (`am-mock-server/run.sh`) and you've registered a face there via its web UI.
+
+```bash
+.venv/bin/python client.py --config config.mock-server.yaml --server alice.jpg
+```
+The client detects the face (YuNet), computes a 512-dim MobileFaceNet embedding, POSTs it to `http://localhost:8000/api/v1/identify/`, and prints the server's answer:
+```
+[INFO] MODE: server (http://localhost:8000)  <- alice.jpg
+[INFO] Face: bbox=(...)  score=0.98
+[INFO] Embedding: 512-dim
+[INFO] Server -> name='Alice Kumar' confidence = 0.83 distance = 0.34
+>>> Recognised: Alice Kumar
+```
+- **`distance`** is L2 (lower = better); under the server's `0.8` cutoff = a match.
+- **"Dimension mismatch … 512"** → you used the default `config.yaml` (dlib/128-dim) instead of `config.mock-server.yaml`. This is the #1 gotcha — always pass `--config config.mock-server.yaml` for the mock.
+- If the server is unreachable, the client automatically falls back to the local diagnostic DB.
+
+### Tutorial B — offline diagnostic mode (no server)
+
+Register faces into a local SQLite DB and match against it — no server, no network.
+
+```bash
+# Register people (use config.mock-server.yaml so embeddings are 512-dim, consistent with the server)
+.venv/bin/python client.py --config config.mock-server.yaml --register Alice alice.jpg
+.venv/bin/python client.py --config config.mock-server.yaml --register Bob   bob.jpg
+
+# Identify against them
+.venv/bin/python client.py --config config.mock-server.yaml --diag alice2.jpg
+# -> >>> Recognised: Alice  (cosine sim=0.79)
+```
+On an unknown face it prints the top-3 nearest matches with similarity scores. Face crops are saved under `diagnostic_mode/faces/`.
+
+> Keep the embedder consistent: faces registered under `mobilefacenet` (512-dim) only match queries also made with `mobilefacenet`. Don't mix with the dlib (128-dim) pairing.
+
+**Command reference** — every flag:
 
 ### Identify a face
 

@@ -43,3 +43,24 @@ def test_identify_handles_server_error():
     client = _client_with_mocked_post({"error": "connection refused"})
     result = client.identify(np.zeros(512, dtype=np.float32))
     assert result is None
+
+def test_identify_logs_dimension_mismatch_guidance():
+    response_400 = {
+        "error": "400 Client Error: face_vector has 128 dimensions, expected 512",
+        "status_code": 400,
+    }
+    client = _client_with_mocked_post(response_400)
+
+    with patch("client.logger") as mock_logger:
+        result = client.identify(np.zeros(128, dtype=np.float32))
+        assert result is None
+        error_calls = [str(c) for c in mock_logger.error.call_args_list]
+        assert any("config.mock-server.yaml" in c for c in error_calls)
+
+def test_identify_generic_error_does_not_trigger_dimension_guidance():
+    response_500 = {"error": "500 Server Error", "status_code": 500}
+    client = _client_with_mocked_post(response_500)
+    with patch("client.logger") as mock_logger:
+        client.identify(np.zeros(512, dtype=np.float32))
+        assert mock_logger.error.call_count == 0
+        assert mock_logger.warning.call_count == 1

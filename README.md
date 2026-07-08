@@ -53,21 +53,7 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 - **`ServerClient.identify()` read dead schema fields**: was falling back to `visitor_name`/`similarity`, neither of which exist in the server's actual `IdentifyResponse`. Fixed: now reads `name`/`confidence`/`distance` directly and logs all three, instead of merging `distance` (lower=better) into a `sim` label that implied higher=better. Covered by `tests/test_server_client.py`.
 
-- **Shipped `config.yaml` defaults (`dlib`, 128-dim) don't match the mock server**, which only implements the 512-dim `yunet`/`mobilefacenet` pairing (mirroring `AurafaceBackend`). This is correct behavior against the *real* `am-master-server` (which does support dlib) — for testing against *this* mock server specifically, use a separate override config rather than editing `config.yaml`:
-
-```bash
-  cp config.yaml config.mock-server.yaml
-```
-  then in `config.mock-server.yaml`:
-```yaml
-  server:
-    url: "http://localhost:8000"   # matches mock-server's compose.yml port
-  detection:
-    detector: yunet
-  embedder:
-    model: mobilefacenet
-```
-  Run with `--config config.mock-server.yaml`. See "Running end-to-end against the mock server" below.
+- **Shipped `config.yaml` defaults (`dlib`, 128-dim) don't match the mock server**, which only implements the 512-dim `yunet`/`mobilefacenet` pairing (mirroring `AurafaceBackend`). Fixed: a dedicated `config.mock-server.yaml` ships alongside `config.yaml` for this exact purpose (see the callout in `## Configuration` above). A runtime guard in `ServerClient.identify()` also catches this specific mismatch and logs guidance pointing at the override config, if the server has the corresponding dimension-validation fix applied.
 
 - **`server.url` in the README's own example (`192.168.1.19:8000`) doesn't match the shipped `config.yaml` default (`localhost:8100`)** — neither matches the mock server's actual port (`8000`). Worth double-checking whichever server you're pointing at.
 
@@ -159,7 +145,12 @@ You can also use a different config file per run:
 ```bash
 .venv/bin/python client.py --config prod.yaml photo.jpg
 ```
-
+> **Testing against `iiith-cvit-am-mock-server` instead of the real `am-master-server`?** 
+> Use `config.mock-server.yaml` instead of editing `config.yaml`:
+> ```bash
+> .venv/bin/python client.py --config config.mock-server.yaml <image>
+> ```
+> The mock server only implements the `yunet`/`mobilefacenet` (512-dim) pairing: `config.yaml`'s `dlib` default is correct for the real server, not this mock. See `config.mock-server.yaml`'s header comment for details.
 ---
 
 ## Usage

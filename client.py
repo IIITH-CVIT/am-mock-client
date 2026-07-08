@@ -703,11 +703,25 @@ class ServerClient:
             return {"error": str(e), "status_code": e.response.status_code if e.response else None}
         except requests.RequestException as e:
             return {"error": str(e)}
-
+    
+    # NOTE: this only fires against a mock server with the 512-dim validation fix
+    # applied (returns 400 on wrong-dim vectors). Against an unfixed server, a
+    # dimension mismatch looks identical to a genuine no-match: check
+    # `Embedding: N-dim` in the log above and compare against the server's gallery.
     def identify(self, embedding: np.ndarray) -> Optional[str]:
         result = self._post(embedding)
         if "error" in result:
-            logger.warning("Server error (%d-dim): %s", embedding.shape[0], result["error"])
+            detail = result["error"]
+            if result.get("status_code") == 400 and "dimensions" in str(detail):
+                logger.error(
+                "Dimension mismatch talking to the server (sent %d-dim). "
+                "If you're testing against iiith-cvit-am-mock-server, it only "
+                "supports the yunet/mobilefacenet pairing (512-dim). Run with "
+                "--config config.mock-server.yaml instead of config.yaml.",
+                embedding.shape[0],
+                )
+            else:
+                logger.warning("Server error (%d-dim): %s", embedding.shape[0], result["error"])
             return None
         name = result.get("name")
         confidence = result.get("confidence")

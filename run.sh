@@ -19,7 +19,7 @@ trap 'xhost -local:docker > /dev/null 2>&1 || true' EXIT
 
 docker run --rm \
     --network=host \
-    -e DISPLAY = "$DISPLAY" \ 
+    -e DISPLAY="$DISPLAY" \
     -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
     $DEVICES \
     face-recognition \

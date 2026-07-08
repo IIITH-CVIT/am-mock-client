@@ -55,7 +55,7 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 - **Shipped `config.yaml` defaults (`dlib`, 128-dim) don't match the mock server**, which only implements the 512-dim `yunet`/`mobilefacenet` pairing (mirroring `AurafaceBackend`). Fixed: a dedicated `config.mock-server.yaml` ships alongside `config.yaml` for this exact purpose (see the callout in `## Configuration` above). A runtime guard in `ServerClient.identify()` also catches this specific mismatch and logs guidance pointing at the override config, if the server has the corresponding dimension-validation fix applied.
 
-- **`server.url` in the README's own example (`192.168.1.19:8000`) doesn't match the shipped `config.yaml` default (`localhost:8100`)** — neither matches the mock server's actual port (`8000`). Worth double-checking whichever server you're pointing at.
+- **`server.url` was inconsistent across the docs**: the README's Configuration example showed `192.168.1.19:8000` while the shipped `config.yaml` (and `client.py`'s built-in default) use `localhost:8100`. Fixed: the README example now matches `config.yaml` at `localhost:8100` — the default for the real `am-master-server`; edit it for your own deployment. The mock server is a deliberate, separate case: use `config.mock-server.yaml` (`localhost:8000`), whose header documents the port difference inline. So there are exactly two intentional values now — `8100` for the real server, `8000` for the mock — and nothing drifts.
 
 - **Fatal errors called `sys.exit(1)` deep in the client**: `_load_image`, `_ensure_models`, `_detect_and_embed`, camera-open and model-init all exited the process directly, so they couldn't be unit-tested (the test runner itself would exit). Fixed: these now raise a typed `ClientError`, and `main()` is the single place that catches it and translates it to a clean `exit(1)`. User-facing behaviour is unchanged (a logged error and exit code `1`, no traceback), but every function below `main()` is now importable and testable. Error paths are covered by `tests/test_client_errors.py`.
 
@@ -152,7 +152,7 @@ All settings live in `config.yaml`. Edit this file before running.
 mode: server
 
 server:
-  url: "http://192.168.1.19:8000"   # FRU server address
+  url: "http://localhost:8100"       # FRU server address (matches config.yaml; edit for your deployment)
   timeout: 10                        # seconds
 
 diagnostic:

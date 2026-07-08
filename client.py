@@ -709,9 +709,10 @@ class ServerClient:
         if "error" in result:
             logger.warning("Server error (%d-dim): %s", embedding.shape[0], result["error"])
             return None
-        name = result.get("name") or result.get("visitor_name")
-        sim  = result.get("distance") or result.get("similarity")
-        logger.info("Server → name=%r  sim=%s", name, sim)
+        name = result.get("name")
+        confidence = result.get("confidence")
+        distance = result.get("distance")
+        logger.info("Server → name=%r confidence = %s distance = %s", name, confidence, distance)
         return name
 
     def close(self):

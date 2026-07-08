@@ -49,6 +49,28 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 ---
 
+## Known Issues & Fixes (testing against the mock server)
+
+- **`ServerClient.identify()` read dead schema fields**: was falling back to `visitor_name`/`similarity`, neither of which exist in the server's actual `IdentifyResponse`. Fixed: now reads `name`/`confidence`/`distance` directly and logs all three, instead of merging `distance` (lower=better) into a `sim` label that implied higher=better. Covered by `tests/test_server_client.py`.
+
+- **Shipped `config.yaml` defaults (`dlib`, 128-dim) don't match the mock server**, which only implements the 512-dim `yunet`/`mobilefacenet` pairing (mirroring `AurafaceBackend`). This is correct behavior against the *real* `am-master-server` (which does support dlib) — for testing against *this* mock server specifically, use a separate override config rather than editing `config.yaml`:
+
+```bash
+  cp config.yaml config.mock-server.yaml
+```
+  then in `config.mock-server.yaml`:
+```yaml
+  server:
+    url: "http://localhost:8000"   # matches mock-server's compose.yml port
+  detection:
+    detector: yunet
+  embedder:
+    model: mobilefacenet
+```
+  Run with `--config config.mock-server.yaml`. See "Running end-to-end against the mock server" below.
+
+- **`server.url` in the README's own example (`192.168.1.19:8000`) doesn't match the shipped `config.yaml` default (`localhost:8100`)** — neither matches the mock server's actual port (`8000`). Worth double-checking whichever server you're pointing at.
+
 ## Project Structure
 
 ```

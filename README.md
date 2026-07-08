@@ -49,6 +49,14 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 ---
 
+## Known Issues & Fixes (testing against the mock server)
+
+- **`ServerClient.identify()` read dead schema fields**: was falling back to `visitor_name`/`similarity`, neither of which exist in the server's actual `IdentifyResponse`. Fixed: now reads `name`/`confidence`/`distance` directly and logs all three, instead of merging `distance` (lower=better) into a `sim` label that implied higher=better. Covered by `tests/test_server_client.py`.
+
+- **Shipped `config.yaml` defaults (`dlib`, 128-dim) don't match the mock server**, which only implements the 512-dim `yunet`/`mobilefacenet` pairing (mirroring `AurafaceBackend`). Fixed: a dedicated `config.mock-server.yaml` ships alongside `config.yaml` for this exact purpose (see the callout in `## Configuration` above). A runtime guard in `ServerClient.identify()` also catches this specific mismatch and logs guidance pointing at the override config, if the server has the corresponding dimension-validation fix applied.
+
+- **`server.url` in the README's own example (`192.168.1.19:8000`) doesn't match the shipped `config.yaml` default (`localhost:8100`)** — neither matches the mock server's actual port (`8000`). Worth double-checking whichever server you're pointing at.
+
 ## Project Structure
 
 ```
@@ -91,6 +99,25 @@ conda activate face-recognition
 ```
 
 ---
+
+### Running in Docker
+
+`./run.sh` builds and runs the client in a container with your host's cameras and X display forwarded in, for live camera mode specifically:
+
+```bash
+./build.sh   # first time / after code changes
+./run.sh
+```
+
+This requires an X server (Linux desktop). `run.sh` handles the X11 forwarding (`xhost`, `DISPLAY`, `/tmp/.X11-unix`) automatically, but it won't work over SSH without X forwarding of your own (`ssh -X`), and doesn't work on macOS/Windows Docker Desktop without extra X server setup (XQuartz / VcXsrv) which is not covered here.
+
+For single-image identify/register/list (`--server photo.jpg`, `--register`, `--list`), you don't need Docker or a display at all, just run natively:
+```bash
+uv venv --python 3.13 .venv
+uv pip install -r requirements.txt --python .venv/bin/python
+.venv/bin/python client.py --server photo.jpg
+```
+This is also the simpler path for testing against the mock server (see `config.mock-server.yaml` above). Docker's camera/X11 setup is only worth the overhead if you specifically need live-camera testing.
 
 ## Configuration
 
@@ -137,7 +164,12 @@ You can also use a different config file per run:
 ```bash
 .venv/bin/python client.py --config prod.yaml photo.jpg
 ```
-
+> **Testing against `iiith-cvit-am-mock-server` instead of the real `am-master-server`?** 
+> Use `config.mock-server.yaml` instead of editing `config.yaml`:
+> ```bash
+> .venv/bin/python client.py --config config.mock-server.yaml <image>
+> ```
+> The mock server only implements the `yunet`/`mobilefacenet` (512-dim) pairing: `config.yaml`'s `dlib` default is correct for the real server, not this mock. See `config.mock-server.yaml`'s header comment for details.
 ---
 
 ## Usage

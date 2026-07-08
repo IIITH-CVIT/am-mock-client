@@ -1,0 +1,42 @@
+# Face Recognition Client Configuration — MOCK SERVER OVERRIDE
+#
+# Use this instead of config.yaml when testing against iiith-cvit-am-mock-server
+# specifically:  .venv/bin/python client.py --config config.mock-server.yaml <image>
+#
+# The mock server only implements the AurafaceBackend pairing (yunet + mobilefacenet,
+# 512-dim) — it has no dlib backend. config.yaml's dlib default is correct for the
+# REAL am-master-server, not this mock. Don't edit config.yaml to "fix" this; use
+# this file instead so both backends stay usable depending on what you're testing against.
+
+mode: server
+
+server:
+  url: "http://localhost:8000"    # mock-server's compose.yml port; NOT 8100 (that's config.yaml's real-server default)
+  timeout: 10
+
+diagnostic:
+  db_path: ./diagnostic_mode/diagnostic.db
+  faces_dir: ./diagnostic_mode/faces
+  cosine_threshold: 0.6
+  topk: 3
+
+models:
+  yunet: ./models/face_detection_yunet_2023mar.onnx
+  mobilefacenet: ./models/mobilefacenet.onnx
+
+detection:
+  detector: yunet                 # must pair with embedder.model: mobilefacenet -> mock server has no dlib gallery
+  threshold: 0.5                  # yunet's actual default score threshold (dlib's 0.3 doesn't apply here)
+  input_size: 640
+  num_upsamples: 1                # unused for yunet, left for schema compatibility
+
+embedder:
+  model: mobilefacenet
+  num_jitters: 1                  # unused for mobilefacenet, left for schema compatibility
+
+camera:
+  device: 0
+  frame_skip: 10
+
+logging:
+  level: INFO

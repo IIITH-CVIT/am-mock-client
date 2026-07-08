@@ -100,6 +100,25 @@ conda activate face-recognition
 
 ---
 
+### Running in Docker
+
+`./run.sh` builds and runs the client in a container with your host's cameras and X display forwarded in, for live camera mode specifically:
+
+```bash
+./build.sh   # first time / after code changes
+./run.sh
+```
+
+This requires an X server (Linux desktop). `run.sh` handles the X11 forwarding (`xhost`, `DISPLAY`, `/tmp/.X11-unix`) automatically, but it won't work over SSH without X forwarding of your own (`ssh -X`), and doesn't work on macOS/Windows Docker Desktop without extra X server setup (XQuartz / VcXsrv) which is not covered here.
+
+For single-image identify/register/list (`--server photo.jpg`, `--register`, `--list`), you don't need Docker or a display at all, just run natively:
+```bash
+uv venv --python 3.13 .venv
+uv pip install -r requirements.txt --python .venv/bin/python
+.venv/bin/python client.py --server photo.jpg
+```
+This is also the simpler path for testing against the mock server (see `config.mock-server.yaml` above). Docker's camera/X11 setup is only worth the overhead if you specifically need live-camera testing.
+
 ## Configuration
 
 All settings live in `config.yaml`. Edit this file before running.

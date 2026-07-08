@@ -26,4 +26,4 @@ RUN pip install --no-cache-dir \
     charset-normalizer==3.4.7 \
     idna==3.18
 
-CMD ["python", "client.py"]
+CMD ["python", "client.py", "--help"]

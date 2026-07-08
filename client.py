@@ -602,24 +602,30 @@ class DiagnosticDB:
         logger.info("Registered '%s' → face_id=%d  dim=%d", name, face_id, embedding.shape[0])
         return face_id
 
-    def search(self, embedding: np.ndarray) -> Tuple[Optional[str], Optional[str], float]:
-        """
-        Vectorised cosine similarity search (mirrors reference search_diagnostic_faces).
-        Returns: (name, image_path, similarity) — name/path are None if below threshold.
+    def _scored_candidates(
+        self, embedding: np.ndarray, *, warn_on_dim_mismatch: bool = False
+    ) -> Tuple[List[str], List[str], np.ndarray]:
+        """Shared core of search() and search_topk().
+
+        Load every stored face, keep the ones whose embedding dimension matches
+        the query, and return (names, image_paths, cosine_sims) aligned by index.
+        Returns empty lists + an empty array when the DB is empty, the query is
+        degenerate (zero norm), or nothing shares the query's dimension —
+        logging a warning in that last case only when asked, so the message
+        fires from search() (as it always did) but not a second time from the
+        search_topk() call that immediately follows it in cmd_diagnostic().
         """
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT name, image_path, embedding FROM diagnostic_faces"
             ).fetchall()
 
-        if not rows:
-            return None, None, 0.0
-
         query      = embedding.astype(np.float32)
         query_dim  = query.shape[0]
         query_norm = np.linalg.norm(query)
-        if query_norm == 0:
-            return None, None, 0.0
+        empty: Tuple[List[str], List[str], np.ndarray] = ([], [], np.empty(0, dtype=np.float32))
+        if not rows or query_norm == 0:
+            return empty
 
         names, paths, embs = [], [], []
         for row in rows:
@@ -630,11 +636,12 @@ class DiagnosticDB:
                 embs.append(stored)
 
         if not embs:
-            logger.warning(
-                "DiagnosticDB: no stored embeddings with dim=%d — "
-                "register faces first with --register", query_dim
-            )
-            return None, None, 0.0
+            if warn_on_dim_mismatch:
+                logger.warning(
+                    "DiagnosticDB: no stored embeddings with dim=%d — "
+                    "register faces first with --register", query_dim
+                )
+            return empty
 
         stored_mat = np.array(embs, dtype=np.float32)
         norms = np.linalg.norm(stored_mat, axis=1)
@@ -643,46 +650,28 @@ class DiagnosticDB:
         if valid.any():
             sims[valid] = (stored_mat[valid] @ query) / (norms[valid] * query_norm)
 
+        return names, paths, sims
+
+    def search(self, embedding: np.ndarray) -> Tuple[Optional[str], Optional[str], float]:
+        """
+        Vectorised cosine similarity search (mirrors reference search_diagnostic_faces).
+        Returns: (name, image_path, similarity) — name/path are None if below threshold.
+        """
+        names, paths, sims = self._scored_candidates(embedding, warn_on_dim_mismatch=True)
+        if sims.size == 0:
+            return None, None, 0.0
+
         best     = int(np.argmax(sims))
         best_sim = float(sims[best])
-
         if best_sim >= self.threshold:
             return names[best], paths[best], best_sim
         return None, None, best_sim
 
     def search_topk(self, embedding: np.ndarray) -> List[Tuple[str, float]]:
         """Top-K without threshold gate (mirrors reference search_diagnostic_faces_topk)."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT name, embedding FROM diagnostic_faces"
-            ).fetchall()
-
-        if not rows:
+        names, _paths, sims = self._scored_candidates(embedding)
+        if sims.size == 0:
             return []
-
-        query      = embedding.astype(np.float32)
-        query_dim  = query.shape[0]
-        query_norm = np.linalg.norm(query)
-        if query_norm == 0:
-            return []
-
-        names, embs = [], []
-        for row in rows:
-            stored = self._from_blob(row["embedding"])
-            if stored.shape[0] == query_dim:
-                names.append(row["name"])
-                embs.append(stored)
-
-        if not embs:
-            return []
-
-        stored_mat = np.array(embs, dtype=np.float32)
-        norms = np.linalg.norm(stored_mat, axis=1)
-        sims  = np.zeros(len(names), dtype=np.float32)
-        valid = norms > 0
-        if valid.any():
-            sims[valid] = (stored_mat[valid] @ query) / (norms[valid] * query_norm)
-
         order = np.argsort(-sims)[:max(1, self.topk)]
         return [(names[i], float(sims[i])) for i in order]
 

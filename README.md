@@ -57,6 +57,12 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 - **`server.url` in the README's own example (`192.168.1.19:8000`) doesn't match the shipped `config.yaml` default (`localhost:8100`)** — neither matches the mock server's actual port (`8000`). Worth double-checking whichever server you're pointing at.
 
+- **Fatal errors called `sys.exit(1)` deep in the client**: `_load_image`, `_ensure_models`, `_detect_and_embed`, camera-open and model-init all exited the process directly, so they couldn't be unit-tested (the test runner itself would exit). Fixed: these now raise a typed `ClientError`, and `main()` is the single place that catches it and translates it to a clean `exit(1)`. User-facing behaviour is unchanged (a logged error and exit code `1`, no traceback), but every function below `main()` is now importable and testable. Error paths are covered by `tests/test_client_errors.py`.
+
+- **`import dlib` / `import face_recognition_models` at module top made `client.py` unimportable without the (heavy, compiled) dlib wheel** — including for tests using only the `yunet`/`mobilefacenet` ONNX pairing. Fixed: both are now imported lazily; `client.py` imports fine without them, and the dlib-backed detector/embedder raise a clear `ClientError` only if the dlib backend is actually selected while the packages are missing.
+
+- **`DiagnosticDB.search` / `search_topk` carried ~30 lines of near-duplicated load/dim-filter/cosine logic**: maintainability risk, no functional bug. Fixed: the shared work is now one private `_scored_candidates()` helper; `search()` applies the argmax + threshold and `search_topk()` sorts + slices. Behaviour is unchanged (including that the dim-mismatch warning fires from `search()` but not the `search_topk()` call right after it). Covered by `tests/test_diagnostic_db.py`.
+
 ## Project Structure
 
 ```
@@ -97,6 +103,20 @@ Or with conda:
 conda env create -f environment.yml
 conda activate face-recognition
 ```
+
+---
+
+### Running the tests
+
+```bash
+python3 -m pytest tests/test_server_client.py tests/test_client_errors.py tests/test_diagnostic_db.py
+```
+
+- `test_server_client.py` — server response parsing (`IdentifyResponse` field names, error/dimension-mismatch handling).
+- `test_client_errors.py` — the `ClientError` error paths (missing image, no face detected, missing models, dlib backend selected without the dlib packages).
+- `test_diagnostic_db.py` — local `DiagnosticDB` cosine search: best-match-above-threshold, top-K ordering, dimension-mismatch gating, and the empty-DB path.
+
+These import `client.py` directly and don't need `dlib`, a camera, or a running server. `tests/test_dockerfile.py` is separate: it requires Docker and a built `face-recognition` image (`./build.sh`) and won't pass without them.
 
 ---
 

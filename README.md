@@ -65,6 +65,8 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 - **`ServerClient._post` formats the face vector with `%.6f` (6 decimal places) before sending** — flagged as an undocumented truncation. Examined, not just documented: embeddings are L2-normalised (or small-magnitude raw dlib descriptors), so over 2000 random 512-d unit vectors `%.6f` introduces at most ~5e-7 per component / ~7e-6 whole-vector L2 error, shifting the server's match distance by ≤1.5e-6 — six orders of magnitude below the `0.8` threshold, and it never changed a nearest-neighbour pick. Left as-is (full float32 round-trip needs ~9 significant figures and buys nothing for matching); the rationale is now a comment in `_post`.
 
+- **`_ensure_models()` validated the ONNX weights but not the two dlib `.dat` files** (`dlib_face_recognition_resnet_model_v1.dat`, `shape_predictor_5_face_landmarks.dat`) that the dlib embedder loads from the `face_recognition_models` package. A broken/partial install failed with an obscure dlib `RuntimeError` mid-run instead of the clear up-front message the ONNX paths got. Fixed: when the dlib embedder is selected, `_ensure_models` now checks the package is importable and both `.dat` files exist, failing fast with the same "Missing model" message + a reinstall hint. Covered by `tests/test_client_errors.py`.
+
 ## Project Structure
 
 ```

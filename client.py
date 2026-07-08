@@ -266,28 +266,59 @@ class ClientError(Exception):
 
 
 # ─────────────────────────────────────────────────────────────
-# Verify the ONNX model files required by the configured
-# detector/embedder are present (bundled in ./models/, same
-# files as mock-server/models/ — no auto-download).
+# Verify the model weights required by the configured detector/
+# embedder are present, and fail fast with a clear message if not:
+#   - ONNX files (yunet/mobilefacenet) are bundled in ./models/
+#     (same files as mock-server/models/ — no auto-download).
+#   - dlib .dat files (dlib backend) ship inside the
+#     face_recognition_models pip package, not ./models/.
 # ─────────────────────────────────────────────────────────────
 
-def _ensure_models(cfg: Config) -> None:
-    required = []
-    if cfg.detector_backend == "yunet":
-        required.append(("YuNet face detector", cfg.yunet_model))
-    if cfg.embedder_model == "mobilefacenet":
-        required.append(("MobileFaceNet embedder", cfg.mobilefacenet_model))
-
-    missing = [(label, path) for label, path in required if not os.path.exists(path)]
-    if not missing:
-        return
-
+def _raise_missing(missing: list, remediation: str) -> None:
     lines = [f"Missing model: {label}  ({path})" for label, path in missing]
-    lines.append(
-        f"Copy the missing .onnx file(s) into {os.path.dirname(missing[0][1])} "
-        f"(same files as mock-server/models/)."
-    )
+    lines.append(remediation)
     raise ClientError("\n".join(lines))
+
+
+def _ensure_models(cfg: Config) -> None:
+    # ONNX weights bundled in ./models/ (yunet detector / mobilefacenet embedder)
+    onnx_required = []
+    if cfg.detector_backend == "yunet":
+        onnx_required.append(("YuNet face detector", cfg.yunet_model))
+    if cfg.embedder_model == "mobilefacenet":
+        onnx_required.append(("MobileFaceNet embedder", cfg.mobilefacenet_model))
+
+    onnx_missing = [(label, path) for label, path in onnx_required if not os.path.exists(path)]
+    if onnx_missing:
+        _raise_missing(
+            onnx_missing,
+            f"Copy the missing .onnx file(s) into {os.path.dirname(onnx_missing[0][1])} "
+            f"(same files as mock-server/models/).",
+        )
+
+    # The dlib embedder loads two .dat weight files from inside the
+    # face_recognition_models pip package (see DlibEmbedder.__init__). Validate
+    # them here so a missing package or a broken/partial install fails with the
+    # same clear message as the ONNX case, instead of an obscure RuntimeError
+    # raised by dlib deep in the embedder mid-run. (The dlib detector needs only
+    # dlib's built-in HOG detector, so the .dat files matter only for embedding.)
+    if cfg.embedder_model == "dlib":
+        if _face_rec_models is None:
+            raise ClientError(_DLIB_MISSING_MSG)
+        dat_dir = os.path.join(os.path.dirname(_face_rec_models.__file__), "models")
+        dat_required = [
+            ("dlib face-recognition ResNet weights",
+             os.path.join(dat_dir, "dlib_face_recognition_resnet_model_v1.dat")),
+            ("dlib 5-point shape predictor",
+             os.path.join(dat_dir, "shape_predictor_5_face_landmarks.dat")),
+        ]
+        dat_missing = [(label, path) for label, path in dat_required if not os.path.exists(path)]
+        if dat_missing:
+            _raise_missing(
+                dat_missing,
+                "These ship inside the 'face_recognition_models' package; reinstall it "
+                "(e.g. pip install --force-reinstall face_recognition_models).",
+            )
 
 
 # ─────────────────────────────────────────────────────────────

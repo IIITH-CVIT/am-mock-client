@@ -51,12 +51,27 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
-import dlib
-import face_recognition_models as _face_rec_models
 import numpy as np
 import onnxruntime as ort
 import requests
 import yaml
+
+# dlib + its model-weights package are imported lazily: the yunet/mobilefacenet
+# (ONNX) backends don't need them, and deferring the import lets client.py be
+# imported for unit tests without the heavy compiled dlib wheel installed. The
+# dlib-backed classes raise a clear ClientError at construction if it's missing.
+try:
+    import dlib
+    import face_recognition_models as _face_rec_models
+except ModuleNotFoundError:  # pragma: no cover - depends on install profile
+    dlib = None
+    _face_rec_models = None
+
+_DLIB_MISSING_MSG = (
+    "The dlib backend is selected (detector/embedder: dlib) but the 'dlib' and "
+    "'face_recognition_models' packages aren't installed. Install them, or switch "
+    "to the yunet/mobilefacenet pairing (e.g. --config config.mock-server.yaml)."
+)
 
 # ─────────────────────────────────────────────────────────────
 # Config
@@ -240,6 +255,16 @@ logging.basicConfig(
 logger = logging.getLogger("face_client")
 
 
+class ClientError(Exception):
+    """Fatal, user-facing client error.
+
+    Raised anywhere below main() instead of calling sys.exit(). main() is the
+    single place that catches it and translates it to a clean exit(1), which
+    keeps every function importable and unit-testable (no process-killing
+    sys.exit in library code).
+    """
+
+
 # ─────────────────────────────────────────────────────────────
 # Verify the ONNX model files required by the configured
 # detector/embedder are present (bundled in ./models/, same
@@ -257,13 +282,12 @@ def _ensure_models(cfg: Config) -> None:
     if not missing:
         return
 
-    for label, path in missing:
-        logger.error("Missing model: %s  (%s)", label, path)
-    logger.error(
-        "Copy the missing .onnx file(s) into %s (same files as mock-server/models/).",
-        os.path.dirname(missing[0][1]),
+    lines = [f"Missing model: {label}  ({path})" for label, path in missing]
+    lines.append(
+        f"Copy the missing .onnx file(s) into {os.path.dirname(missing[0][1])} "
+        f"(same files as mock-server/models/)."
     )
-    sys.exit(1)
+    raise ClientError("\n".join(lines))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -289,6 +313,8 @@ class FaceDetection:
 
 class DlibFaceDetector:
     def __init__(self, cfg: Config):
+        if dlib is None:
+            raise ClientError(_DLIB_MISSING_MSG)
         self.threshold     = cfg.detection_threshold
         self.num_upsamples = cfg.num_upsamples
         self._detector     = dlib.get_frontal_face_detector()
@@ -401,6 +427,8 @@ class DlibEmbedder:
     DIM = 128
 
     def __init__(self, cfg: Config):
+        if dlib is None or _face_rec_models is None:
+            raise ClientError(_DLIB_MISSING_MSG)
         self.num_jitters = cfg.num_jitters
 
         # Works in both normal Python and PyInstaller frozen bundles
@@ -732,6 +760,9 @@ class ServerClient:
     def close(self):
         self._session.close()
 
+class ClientError(Exception):
+     """Fatal, user-facing client error. main() converts it to exit(1);
+    nothing below main() calls sys.exit, so it all stays importable/testable."""
 
 # ─────────────────────────────────────────────────────────────
 # Shared helpers
@@ -740,8 +771,7 @@ class ServerClient:
 def _load_image(path: str) -> np.ndarray:
     frame = cv2.imread(path)
     if frame is None:
-        logger.error("Failed to load image: %s", path)
-        sys.exit(1)
+        raise ClientError(f"Failed to load image: {path}")
     logger.info("Image: %dx%d  ← %s", frame.shape[1], frame.shape[0], path)
     return frame
 
@@ -763,8 +793,7 @@ def _detect_and_embed(
 ) -> Tuple[FaceDetection, np.ndarray]:
     detection = detector.detect(frame)
     if detection is None:
-        logger.error("No face detected in the image.")
-        sys.exit(1)
+        raise ClientError("No face detected in the image.")
     x1, y1, x2, y2 = detection.bbox
     logger.info("Face: bbox=(%d,%d,%d,%d)  score=%.3f", x1, y1, x2, y2, detection.score)
     vec = embedder.embed(frame, detection)
@@ -860,9 +889,10 @@ def cmd_server(
         db    = DiagnosticDB(cfg)
         faces = db.list_all()
         if not faces:
-            print("\n>>> Server unreachable and no local faces registered.")
-            print(f"    Register first:  python client.py --register <name> <image>\n")
-            sys.exit(1)
+            raise ClientError(
+                "Server unreachable and no local faces registered. "
+                "Register first: python client.py --register <name> <image>"
+            )
 
         t0 = time.time()
         name, img_path, sim = db.search(vec)
@@ -892,8 +922,7 @@ def cmd_camera(
 
     cap = cv2.VideoCapture(device)
     if not cap.isOpened():
-        logger.error("Cannot open camera device %d", device)
-        sys.exit(1)
+        raise ClientError(f"Cannot open camera device {device}")
     logger.info("Camera %d opened | frame_skip=%d | embedder=%d-dim",
                 device, frame_skip, embedder.DIM)
 
@@ -966,6 +995,61 @@ def cmd_camera(
 # Main
 # ─────────────────────────────────────────────────────────────
 
+def _run(args, cfg: Config) -> None:
+    """Execute the requested command.
+
+    Raises ClientError on any fatal, user-facing error and never calls
+    sys.exit, so the whole flow stays importable and unit-testable. main() is
+    the sole place that turns a ClientError into exit(1).
+    """
+    # ── --list: no image needed ──────────────────────────────
+    if args.list:
+        cmd_list(cfg)
+        return
+
+    # ── Validate image (not needed for --camera/--list; default is camera) ───
+    if not args.camera and not args.image:
+        args.camera = True  # no args → default to camera
+
+    if not args.camera and not os.path.isfile(args.image):
+        raise ClientError(f"Image not found: {args.image}")
+
+    # ── Ensure models ────────────────────────────────────────
+    _ensure_models(cfg)
+
+    # ── Load models (all settings from config) ───────────────
+    try:
+        if cfg.detector_backend == "dlib":
+            detector = DlibFaceDetector(cfg)
+        else:
+            detector = YuNetDetector(cfg)
+
+        if cfg.embedder_model == "dlib":
+            embedder = DlibEmbedder(cfg)
+        else:
+            embedder = MobileFaceNetEmbedder(cfg)
+
+        logger.info(
+            "Detector: %s  |  Embedder: %s (%d-dim)",
+            cfg.detector_backend, cfg.embedder_model, embedder.DIM,
+        )
+    except ClientError:
+        raise
+    except Exception as e:
+        raise ClientError(f"Model init failed: {e}") from e
+
+    # ── Resolve effective mode ───────────────────────────────
+    if args.camera:
+        cmd_camera(detector, embedder, cfg)
+    elif args.register:
+        cmd_register(args.register, args.image, detector, embedder, cfg)
+    elif args.diag or cfg.mode == "diagnostic":
+        cmd_diagnostic(args.image, detector, embedder, cfg)
+    else:
+        # args.server  OR  cfg.mode == "server"  (or anything else → server)
+        cmd_server(args.image, detector, embedder, cfg)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Face Recognition Client",
@@ -998,53 +1082,14 @@ Examples:
     logger.info("Config: %s  |  mode=%s  |  server=%s",
                 args.config, cfg.mode, cfg.server_url)
 
-    # ── --list: no image needed ──────────────────────────────
-    if args.list:
-        cmd_list(cfg)
-        return
-
-    # ── Validate image (not needed for --camera/--list; default is camera) ───
-    if not args.camera and not args.image:
-        args.camera = True  # no args → default to camera
-
-    if not args.camera:
-        if not os.path.isfile(args.image):
-            logger.error("Image not found: %s", args.image)
-            sys.exit(1)
-
-    # ── Ensure models ────────────────────────────────────────
-    _ensure_models(cfg)
-
-    # ── Load models (all settings from config) ───────────────
+    # All fatal, user-facing errors surface as ClientError; this is the single
+    # place that turns them into a clean exit(1). Everything below main() raises
+    # instead of calling sys.exit, so it stays importable and unit-testable.
     try:
-        if cfg.detector_backend == "dlib":
-            detector = DlibFaceDetector(cfg)
-        else:
-            detector = YuNetDetector(cfg)
-
-        if cfg.embedder_model == "dlib":
-            embedder = DlibEmbedder(cfg)
-        else:
-            embedder = MobileFaceNetEmbedder(cfg)
-
-        logger.info(
-            "Detector: %s  |  Embedder: %s (%d-dim)",
-            cfg.detector_backend, cfg.embedder_model, embedder.DIM,
-        )
-    except Exception as e:
-        logger.error("Model init failed: %s", e)
+        _run(args, cfg)
+    except ClientError as e:
+        logger.error("%s", e)
         sys.exit(1)
-
-    # ── Resolve effective mode ───────────────────────────────
-    if args.camera:
-        cmd_camera(detector, embedder, cfg)
-    elif args.register:
-        cmd_register(args.register, args.image, detector, embedder, cfg)
-    elif args.diag or cfg.mode == "diagnostic":
-        cmd_diagnostic(args.image, detector, embedder, cfg)
-    else:
-        # args.server  OR  cfg.mode == "server"  (or anything else → server)
-        cmd_server(args.image, detector, embedder, cfg)
 
 
 if __name__ == "__main__":

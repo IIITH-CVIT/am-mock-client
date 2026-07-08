@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np 
 from client import ServerClient, Config 
 
-def _client_with_mocked_post(respinse_json):
+def _client_with_mocked_post(response_json):
     cfg = Config.__new__(Config)
     cfg._data = {"server": {"url": "http://test", "timeout": 5}}
     client = ServerClient(cfg)

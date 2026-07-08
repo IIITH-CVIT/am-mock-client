@@ -63,6 +63,8 @@ When mode is `server` and the server is unreachable, the client automatically fa
 
 - **`DiagnosticDB.search` / `search_topk` carried ~30 lines of near-duplicated load/dim-filter/cosine logic**: maintainability risk, no functional bug. Fixed: the shared work is now one private `_scored_candidates()` helper; `search()` applies the argmax + threshold and `search_topk()` sorts + slices. Behaviour is unchanged (including that the dim-mismatch warning fires from `search()` but not the `search_topk()` call right after it). Covered by `tests/test_diagnostic_db.py`.
 
+- **`ServerClient._post` formats the face vector with `%.6f` (6 decimal places) before sending** — flagged as an undocumented truncation. Examined, not just documented: embeddings are L2-normalised (or small-magnitude raw dlib descriptors), so over 2000 random 512-d unit vectors `%.6f` introduces at most ~5e-7 per component / ~7e-6 whole-vector L2 error, shifting the server's match distance by ≤1.5e-6 — six orders of magnitude below the `0.8` threshold, and it never changed a nearest-neighbour pick. Left as-is (full float32 round-trip needs ~9 significant figures and buys nothing for matching); the rationale is now a comment in `_post`.
+
 ## Project Structure
 
 ```

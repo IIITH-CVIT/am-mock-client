@@ -144,13 +144,15 @@ class Config:
         self._data = dict(_DEFAULT_CONFIG)
         self.config_path = config_path
 
-        if os.path.isfile(config_path):
-            with open(config_path) as f:
-                loaded = yaml.safe_load(f) or {}
-            self._data = _deep_merge(self._data, loaded)
-        else:
-            # First run — write the defaults so the user can see / edit them
-            pass
+        if not os.path.isfile(config_path):
+            raise ClientError(
+                f"Config file not found: {config_path!r}. Check the path and try again."
+            )
+
+        with open(config_path) as f:
+            loaded = yaml.safe_load(f) or {}
+        self._data = _deep_merge(self._data, loaded)
+        self._path = config_path
 
     def get(self, dotpath: str, default=None):
         parts = dotpath.split(".")

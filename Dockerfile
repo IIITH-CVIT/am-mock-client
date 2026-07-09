@@ -3,6 +3,7 @@ FROM python:3.13-slim
 # System deps for dlib (C++ compile) + camera tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
+    make \
     g++ \
     libopenblas-dev \
     v4l-utils \
@@ -19,6 +20,7 @@ RUN pip install --no-cache-dir \
     onnxruntime==1.27.0 \
     opencv-python-headless==4.13.0.92 \
     requests==2.34.2 \
+    pyyaml==6.0.3 \
     protobuf==7.35.1 \
     flatbuffers==25.12.19 \
     certifi==2026.6.17 \
@@ -26,4 +28,5 @@ RUN pip install --no-cache-dir \
     charset-normalizer==3.4.7 \
     idna==3.18
 
-CMD ["python", "client.py", "--help"]
+ENTRYPOINT ["python", "client.py"]
+CMD ["--help"]

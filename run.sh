@@ -23,4 +23,5 @@ docker run --rm \
     -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
     $DEVICES \
     face-recognition \
+    --config config.mock-server.yaml \
     --camera

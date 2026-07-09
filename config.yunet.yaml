@@ -1,0 +1,42 @@
+# Face Recognition Client — ALTERNATE preset: YuNet + MobileFaceNet
+#
+# Use this instead of config.yaml when you want the 512-dim YuNet+MobileFaceNet
+# model instead of the default dlib one:
+#     .venv/bin/python client.py --config config.yunet.yaml <image>
+#
+# It talks to the SAME mock server (localhost:8000) as config.yaml — the only
+# difference is the face model. The mock server enrols both models for every
+# registration, so nothing else needs to change to use this.
+
+mode: server
+
+server:
+  url: "http://localhost:8000"    # same mock server as config.yaml
+  timeout: 10
+
+diagnostic:
+  db_path: ./diagnostic_mode/diagnostic.db
+  faces_dir: ./diagnostic_mode/faces
+  cosine_threshold: 0.6
+  topk: 3
+
+models:
+  yunet: ./models/face_detection_yunet_2023mar.onnx
+  mobilefacenet: ./models/mobilefacenet.onnx
+
+detection:
+  detector: yunet                 # paired with embedder.model: mobilefacenet
+  threshold: 0.5                  # yunet's default score threshold
+  input_size: 640
+  num_upsamples: 1                # unused for yunet, left for schema compatibility
+
+embedder:
+  model: mobilefacenet
+  num_jitters: 1                  # unused for mobilefacenet, left for schema compatibility
+
+camera:
+  device: 0
+  frame_skip: 10
+
+logging:
+  level: INFO

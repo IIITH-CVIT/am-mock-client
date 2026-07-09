@@ -1,6 +1,7 @@
 FROM python:3.13-slim
 
-# System deps for dlib (C++ compile) + camera tools
+# System deps for dlib (C++ compile) + camera tools.
+# Builds fine under both Podman (team standard) and Docker — standard syntax.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-0 \
     libgl1 \
@@ -17,7 +18,7 @@ WORKDIR /app
 
 COPY client.py ./
 COPY config.yaml ./
-COPY config.mock-server.yaml ./
+COPY config.yunet.yaml ./
 COPY models/ ./models/
 
 RUN pip install --no-cache-dir \

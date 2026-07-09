@@ -28,15 +28,22 @@ MobileFaceNetEmbedder (512-dim)  ← alternate; L2-normalised via ONNX, landmark
  Prints name (or overlays it live on the camera window)
 ```
 
-The default detector (dlib HOG) + embedder (dlib ResNet, 128-dim) pair mirrors
-`am-master-server`'s `DlibBackend` exactly (`app/core/face_rec.py`: HOG detection
-with `number_of_times_to_upsample=1`, 128-dim raw embedding, server-side L2 cutoff
-`dlib_threshold=0.6`), so embeddings computed here match what the server has
-enrolled. YuNet + MobileFaceNet is kept as a selectable alternate pairing,
-mirroring `am-master-server`'s `AurafaceBackend` instead (512-dim L2-normalised,
-server-side L2 cutoff `auraface_threshold=0.8`). **The two pairings are never
-mixed** — the server never re-derives embeddings from pixels, so whichever
-detector you pick, use its matching embedder.
+This client can recognise faces with either of two models, and the **mock server
+enrols both** for every registration, so either works out of the box:
+
+- **dlib (HOG + ResNet, 128-dim)** — the **default** (`config.yaml`). Mirrors
+  `am-master-server`'s `DlibBackend` exactly (HOG detection with
+  `number_of_times_to_upsample=1`, 128-dim raw embedding, server-side L2 cutoff
+  `dlib_threshold=0.6`).
+- **YuNet + MobileFaceNet (512-dim)** — the alternate (`config.yunet.yaml`).
+  Mirrors `am-master-server`'s `AurafaceBackend` (512-dim L2-normalised,
+  server-side L2 cutoff `auraface_threshold=0.8`).
+
+**The detector and embedder are always used as a matched pair** — dlib+dlib, or
+yunet+mobilefacenet — never mixed. The server never re-derives embeddings from
+pixels; it just searches whichever gallery matches the size of the vector you send
+(128 → dlib, 512 → mobilefacenet). To switch models you change one config setting
+(or pass `--config config.yunet.yaml`); nothing on the server side changes.
 
 **Two modes:**
 
@@ -58,14 +65,18 @@ Recognise someone against the mock server in four commands (assumes `am-mock-ser
 cd ../am-mock-server && ./run.sh
 #    ...then register a face at http://localhost:8000 (see that repo's "How to use")
 
-# 2. Set up this client — native venv + light deps, no dlib, no sudo
+# 2. Set up this client — native venv + all deps (default includes dlib, ~10-15 min compile)
 cd ../am-mock-client && ./setup.sh
 
-# 3. Identify a photo of the person you registered
-.venv/bin/python client.py --config config.mock-server.yaml --server photo.jpg
+# 3. Identify a photo of the person you registered (default dlib model)
+.venv/bin/python client.py --server photo.jpg
 ```
 
-Expect `>>> Recognised: <name>`. Step-by-step detail (and the offline/diagnostic flow) is under [`## How to use`](#how-to-use) below; full setup options under [`### Setup`](#setup).
+Expect `>>> Recognised: <name>`. That uses the **default dlib model**. To use the
+YuNet+MobileFaceNet model instead, add `--config config.yunet.yaml` (and you can
+skip the dlib compile with `./setup.sh --light`). Step-by-step detail (and the
+offline/diagnostic flow) is under [`## How to use`](#how-to-use) below; full setup
+options under [`### Setup`](#setup).
 
 ---
 
@@ -73,9 +84,9 @@ Expect `>>> Recognised: <name>`. Step-by-step detail (and the offline/diagnostic
 
 - **`ServerClient.identify()` read dead schema fields**: was falling back to `visitor_name`/`similarity`, neither of which exist in the server's actual `IdentifyResponse`. Fixed: now reads `name`/`confidence`/`distance` directly and logs all three, instead of merging `distance` (lower=better) into a `sim` label that implied higher=better. Covered by `tests/test_server_client.py`.
 
-- **Shipped `config.yaml` defaults (`dlib`, 128-dim) don't match the mock server**, which only implements the 512-dim `yunet`/`mobilefacenet` pairing (mirroring `AurafaceBackend`). Fixed: a dedicated `config.mock-server.yaml` ships alongside `config.yaml` for this exact purpose (see the callout in `## Configuration` above). A runtime guard in `ServerClient.identify()` also catches this specific mismatch and logs guidance pointing at the override config, if the server has the corresponding dimension-validation fix applied.
+- **The mock server now enrols both models, so the default `config.yaml` (dlib) works against it directly.** (Earlier, the mock only implemented the 512-dim `yunet`/`mobilefacenet` pairing, and a separate `config.mock-server.yaml` was needed.) Today: `config.yaml` is the dlib default and points at the mock server (`localhost:8000`); `config.yunet.yaml` is the ready-made 512-dim alternate. Both hit the same server. A runtime guard in `ServerClient.identify()` still catches a genuinely wrong vector size (neither 128 nor 512 — e.g. a mismatched detector/embedder pairing) and logs which pairings are valid.
 
-- **`server.url` was inconsistent across the docs**: the README's Configuration example showed `192.168.1.19:8000` while the shipped `config.yaml` (and `client.py`'s built-in default) use `localhost:8100`. Fixed: the README example now matches `config.yaml` at `localhost:8100` — the default for the real `am-master-server`; edit it for your own deployment. The mock server is a deliberate, separate case: use `config.mock-server.yaml` (`localhost:8000`), whose header documents the port difference inline. So there are exactly two intentional values now — `8100` for the real server, `8000` for the mock — and nothing drifts.
+- **`server.url` used to point at the real server by default**: `config.yaml` and `client.py`'s built-in default were `localhost:8100` (the real `am-master-server`). Since this client ships as a matched pair with the mock server, the default is now `localhost:8000` (the mock) so it works out of the box — `config.yaml` and `config.yunet.yaml` both use it. For a real `am-master-server`, change `server.url` in `config.yaml` to your deployment's address.
 
 - **Fatal errors called `sys.exit(1)` deep in the client**: `_load_image`, `_ensure_models`, `_detect_and_embed`, camera-open and model-init all exited the process directly, so they couldn't be unit-tested (the test runner itself would exit). Fixed: these now raise a typed `ClientError`, and `main()` is the single place that catches it and translates it to a clean `exit(1)`. User-facing behaviour is unchanged (a logged error and exit code `1`, no traceback), but every function below `main()` is now importable and testable. Error paths are covered by `tests/test_client_errors.py`.
 
@@ -92,7 +103,8 @@ Expect `>>> Recognised: <name>`. Step-by-step detail (and the offline/diagnostic
 ```
 Am-FaceRecognition-Client/
 ├── client.py               # Main client (all logic)
-├── config.yaml             # Configuration (mode, server URL, thresholds, …)
+├── config.yaml             # DEFAULT config — dlib model, mock server :8000
+├── config.yunet.yaml       # Alternate preset — YuNet + MobileFaceNet (512-dim)
 ├── environment.yml         # Conda environment spec
 ├── models/
 │   ├── face_detection_yunet_2023mar.onnx  # YuNet face detector
@@ -108,8 +120,8 @@ Am-FaceRecognition-Client/
 ## Requirements
 
 - Python 3.13
-- YuNet + MobileFaceNet ONNX models in `models/` (bundled in this repo; same files as `mock-server/models/`) — used by the yunet/mobilefacenet pairing, which is what the mock server needs
-- dlib 20.0.1 + its model files (from the `face_recognition_models` package) — **only** for the `dlib` pairing (real `am-master-server`), not for the mock-server path. `client.py` imports dlib lazily, so the client runs fine without it when using the yunet/mobilefacenet pairing (see `./setup.sh` vs `./setup.sh --full`).
+- YuNet + MobileFaceNet ONNX models in `models/` (bundled in this repo; same files as `mock-server/models/`) — used by the YuNet+MobileFaceNet model
+- dlib 20.0.1 + its model files (from the `face_recognition_models` package) — used by the **default** dlib model. `client.py` imports dlib lazily, so the client still runs without it if you only ever use the YuNet+MobileFaceNet model (`./setup.sh --light`).
 
 ### Setup
 
@@ -117,17 +129,16 @@ Am-FaceRecognition-Client/
 every dependency in one go. No manual pip steps, no `sudo`.
 
 ```bash
-./setup.sh          # default: MOCK-SERVER path (light — no dlib)
-./setup.sh --full   # dlib / real am-master-server path
+./setup.sh           # default: installs EVERYTHING, including dlib (~10-15 min compile)
+./setup.sh --light   # skip dlib — YuNet + MobileFaceNet only (fast, no compile)
 ```
 
-By default it installs **only** what the mock-server path (yunet + mobilefacenet,
-512-dim) needs — `onnxruntime` / `opencv` / `numpy` / `requests` / `pyyaml`. That
-path uses **no dlib**, so there's no ~15-min source compile and no C++ build tools
-required — ideal for testing against `iiith-cvit-am-mock-server`. Pass `--full` to
-add `dlib` (compiles from source, needs `cmake`/`g++`/BLAS) for the real-server
-`dlib` pairing. The script prefers `uv` and falls back to `python3 -m venv`; it's
-safe to re-run.
+The **default** installs dlib because the default `config.yaml` uses the dlib
+model. dlib compiles from source (~10-15 min, needs `cmake`/`g++`/BLAS, which most
+Linux boxes have). If you only plan to use the YuNet+MobileFaceNet model, run
+`./setup.sh --light` (installs just `onnxruntime` / `opencv` / `numpy` / `requests`
+/ `pyyaml`, no compile) and always pass `--config config.yunet.yaml`. The script
+prefers `uv` and falls back to `python3 -m venv`; it's safe to re-run.
 
 **Manual alternative — create the virtual environment yourself:**
 
@@ -155,39 +166,40 @@ python3 -m pytest tests/test_server_client.py tests/test_client_errors.py tests/
 - `test_client_errors.py` — the `ClientError` error paths (missing image, no face detected, missing models, dlib backend selected without the dlib packages).
 - `test_diagnostic_db.py` — local `DiagnosticDB` cosine search: best-match-above-threshold, top-K ordering, dimension-mismatch gating, and the empty-DB path.
 
-These import `client.py` directly and don't need `dlib`, a camera, or a running server. `tests/test_dockerfile.py` is separate: it requires Docker and a built `face-recognition` image (`./build.sh`) and won't pass without them.
+These import `client.py` directly and don't need `dlib`, a camera, or a running server. `tests/test_containerfile.py` is separate: it requires Podman and a built `face-recognition` image (`./build.sh`) and skips automatically if Podman isn't installed.
 
 ---
 
-### Running in Docker
+### Running in Podman (live camera)
 
-`./run.sh` builds and runs the client in a container with your host's cameras and X display forwarded in, for live camera mode specifically:
+`./run.sh` builds and runs the client in a **Podman** container (team standard — not
+Docker) with your host's cameras and X display forwarded in, for live camera mode:
 
 ```bash
-./build.sh   # first time / after code changes
-./run.sh
+./build.sh   # first time / after code changes — installs Podman if missing, then builds (dlib compile ~10-15 min)
+./run.sh     # builds automatically on first run if needed
 ```
 
-This requires an X server (Linux desktop). `run.sh` handles the X11 forwarding (`xhost`, `DISPLAY`, `/tmp/.X11-unix`) automatically, but it won't work over SSH without X forwarding of your own (`ssh -X`), and doesn't work on macOS/Windows Docker Desktop without extra X server setup (XQuartz / VcXsrv) which is not covered here.
+This requires an X server (Linux desktop). `run.sh` handles the X11 forwarding (`xhost`, `DISPLAY`, `/tmp/.X11-unix`) and camera devices automatically; it also passes `--group-add keep-groups` so rootless Podman can open the camera (if it can't, add your user to the `video` group). It won't work over SSH without X forwarding of your own (`ssh -X`), and needs extra X server setup on macOS/Windows (XQuartz / VcXsrv) which isn't covered here.
 
-For single-image identify/register/list (`--server photo.jpg`, `--register`, `--list`), you don't need Docker or a display at all, just run natively:
+For single-image identify/register/list (`--server photo.jpg`, `--register`, `--list`), you don't need a container or a display at all — just run natively:
 ```bash
-uv venv --python 3.13 .venv
-uv pip install -r requirements.txt --python .venv/bin/python
+./setup.sh
 .venv/bin/python client.py --server photo.jpg
 ```
-This is also the simpler path for testing against the mock server (see `config.mock-server.yaml` above). Docker's camera/X11 setup is only worth the overhead if you specifically need live-camera testing.
+This is the simpler path for testing against the mock server. The Podman camera/X11 setup is only worth the overhead if you specifically need live-camera testing.
 
 ## Configuration
 
-All settings live in `config.yaml`. Edit this file before running.
+All settings live in `config.yaml` (the default, dlib model). Edit this file before
+running, or use the ready-made `config.yunet.yaml` for the YuNet+MobileFaceNet model.
 
 ```yaml
 # Active mode: "server" or "diagnostic"
 mode: server
 
 server:
-  url: "http://localhost:8100"       # FRU server address (matches config.yaml; edit for your deployment)
+  url: "http://localhost:8000"       # the mock server; change for a real am-master-server
   timeout: 10                        # seconds
 
 diagnostic:
@@ -223,12 +235,13 @@ You can also use a different config file per run:
 ```bash
 .venv/bin/python client.py --config prod.yaml photo.jpg
 ```
-> **Testing against `iiith-cvit-am-mock-server` instead of the real `am-master-server`?** 
-> Use `config.mock-server.yaml` instead of editing `config.yaml`:
+> **Want the YuNet + MobileFaceNet model instead of the default dlib one?**
+> Use the ready-made preset instead of editing `config.yaml`:
 > ```bash
-> .venv/bin/python client.py --config config.mock-server.yaml <image>
+> .venv/bin/python client.py --config config.yunet.yaml <image>
 > ```
-> The mock server only implements the `yunet`/`mobilefacenet` (512-dim) pairing: `config.yaml`'s `dlib` default is correct for the real server, not this mock. See `config.mock-server.yaml`'s header comment for details.
+> It talks to the same mock server (`localhost:8000`) — only the face model differs.
+> The mock server enrols both models per registration, so either works.
 ---
 
 ## How to use
@@ -242,18 +255,18 @@ You can also use a different config file per run:
 Prereq: the mock server is running (`am-mock-server/run.sh`) and you've registered a face there via its web UI.
 
 ```bash
-.venv/bin/python client.py --config config.mock-server.yaml --server alice.jpg
+.venv/bin/python client.py --server alice.jpg
 ```
-The client detects the face (YuNet), computes a 512-dim MobileFaceNet embedding, POSTs it to `http://localhost:8000/api/v1/identify/`, and prints the server's answer:
+Using the **default dlib model**, the client detects the face, computes a 128-dim dlib descriptor, POSTs it to `http://localhost:8000/api/v1/identify/`, and prints the server's answer:
 ```
 [INFO] MODE: server (http://localhost:8000)  <- alice.jpg
 [INFO] Face: bbox=(...)  score=0.98
-[INFO] Embedding: 512-dim
+[INFO] Embedding: 128-dim
 [INFO] Server -> name='Alice Kumar' confidence = 0.83 distance = 0.34
 >>> Recognised: Alice Kumar
 ```
-- **`distance`** is L2 (lower = better); under the server's `0.8` cutoff = a match.
-- **"Dimension mismatch … 512"** → you used the default `config.yaml` (dlib/128-dim) instead of `config.mock-server.yaml`. This is the #1 gotcha — always pass `--config config.mock-server.yaml` for the mock.
+- **`distance`** is L2 (lower = better); under the model's cutoff (`0.6` for dlib, `0.8` for MobileFaceNet) = a match.
+- To use the **YuNet + MobileFaceNet** model instead, add `--config config.yunet.yaml` (the log then shows `Embedding: 512-dim`). Both models work because the server enrolled both.
 - If the server is unreachable, the client automatically falls back to the local diagnostic DB.
 
 ### Tutorial B — offline diagnostic mode (no server)
@@ -261,17 +274,17 @@ The client detects the face (YuNet), computes a 512-dim MobileFaceNet embedding,
 Register faces into a local SQLite DB and match against it — no server, no network.
 
 ```bash
-# Register people (use config.mock-server.yaml so embeddings are 512-dim, consistent with the server)
-.venv/bin/python client.py --config config.mock-server.yaml --register Alice alice.jpg
-.venv/bin/python client.py --config config.mock-server.yaml --register Bob   bob.jpg
+# Register people (default dlib model)
+.venv/bin/python client.py --register Alice alice.jpg
+.venv/bin/python client.py --register Bob   bob.jpg
 
 # Identify against them
-.venv/bin/python client.py --config config.mock-server.yaml --diag alice2.jpg
+.venv/bin/python client.py --diag alice2.jpg
 # -> >>> Recognised: Alice  (cosine sim=0.79)
 ```
 On an unknown face it prints the top-3 nearest matches with similarity scores. Face crops are saved under `diagnostic_mode/faces/`.
 
-> Keep the embedder consistent: faces registered under `mobilefacenet` (512-dim) only match queries also made with `mobilefacenet`. Don't mix with the dlib (128-dim) pairing.
+> Keep the model consistent within the local DB: faces registered under dlib (128-dim) only match dlib queries, and mobilefacenet (512-dim) only matches mobilefacenet. Pick one model (don't mix `config.yaml` and `config.yunet.yaml` against the same local DB) — or re-register if you switch.
 
 **Command reference** — every flag:
 
@@ -333,7 +346,7 @@ Total: 3 face(s)
 Sends the configured embedder's vector to the FRU API (`POST /api/v1/identify/`).
 
 - Uses **dlib 128-dim** (raw) by default — matches `am-master-server`'s `DlibBackend` enrollment, server-side L2 cutoff `dlib_threshold=0.6`
-- Switch `embedder.model: mobilefacenet` (with `detection.detector: yunet`) for **512-dim L2-normalised** embeddings instead, matching `AurafaceBackend`, server-side L2 cutoff `auraface_threshold=0.8`
+- For **512-dim L2-normalised** embeddings instead (matching `AurafaceBackend`, cutoff `auraface_threshold=0.8`), pass `--config config.yunet.yaml` (or set `detection.detector: yunet` + `embedder.model: mobilefacenet`)
 - If the server is unreachable, **automatically falls back** to the local SQLite database
 
 ### Diagnostic mode
@@ -387,9 +400,10 @@ This client mirrors three references:
     MobileFaceNet, 512-dim L2-normalised. Alternate pairing here.
   - `RecognitionConfig` (`app/core/config.py`) — server-side match thresholds:
     `dlib_threshold=0.6`, `auraface_threshold=0.8` (L2 distance, lower is better).
-- The YuNet + MobileFaceNet ONNX runtime plumbing was cross-checked against `mock-server/app/core/face_engine.py`
-  (`FaceEngine._detect_face` manual multi-scale YuNet decode, `FaceEngine.embed` landmark alignment) — same
-  model files, same preprocessing, since the mock server implements the same `AurafaceBackend` pipeline.
+- Cross-checked against `mock-server/app/core/face_engine.py`, which now implements **both** backends:
+  `FaceEngine` (YuNet + MobileFaceNet — same model files and preprocessing as here, mirroring `AurafaceBackend`)
+  and `DlibEngine` (dlib HOG + ResNet, mirroring `DlibBackend` — byte-for-byte the same vectors this client's
+  dlib path produces). That's why every mock-server registration enrols one of each, and either model matches.
 - The dlib-backend recognition flow from `am-fru-desktop-app-Fru-MacOs/face_recognition_pipeline.py`:
   - `DlibFaceDetector` — HOG frontal face detector (same `threshold`, `num_upsamples`)
   - `DlibEmbeddingExtractor` — own HOG re-detect + 5-point shape predictor + ResNet descriptor

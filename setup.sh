@@ -7,19 +7,22 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # Bootstrap a native Python environment for the client, installing
 # every dependency it needs to run — no manual pip steps.
 #
-# Default ("mock") installs ONLY what the mock-server path needs
-# (yunet + mobilefacenet, 512-dim): opencv / onnxruntime / numpy /
-# requests / pyyaml. That path uses NO dlib, so there's no ~15-min
-# source compile and no C++ build tools required.
+# Default: installs EVERYTHING, including dlib — because the default
+# config.yaml uses the dlib model. dlib compiles from source (~10-15
+# min, needs cmake/g++/BLAS on the host, which most Linux boxes have).
 #
-# Pass --full for the dlib/real-am-master-server path. That pulls in
-# dlib (compiles from source — slow, needs cmake/g++/BLAS on the host).
+# Pass --light (a.k.a. --yunet) to skip dlib and install only what the
+# YuNet + MobileFaceNet model needs (opencv / onnxruntime / numpy /
+# requests / pyyaml). Fast, no compile — but you must then run with
+# --config config.yunet.yaml (not the default dlib config.yaml).
 #
 # Safe to re-run. Prefers `uv` (fast); falls back to python3 -m venv.
 # ─────────────────────────────────────────────────────────────
 
-MODE="mock"
-[ "${1:-}" = "--full" ] && MODE="full"
+MODE="full"
+case "${1:-}" in
+    --light|--yunet) MODE="light" ;;
+esac
 
 log() { printf '\033[1;34m[setup.sh]\033[0m %s\n' "$*"; }
 
@@ -47,10 +50,10 @@ fi
 
 # 3) Install dependencies for the chosen path.
 if [ "$MODE" = "full" ]; then
-    log "FULL install (dlib real-server path) — dlib compiles from source (~15 min, needs cmake/g++/BLAS)"
+    log "FULL install (default, includes dlib) — dlib compiles from source (~10-15 min, needs cmake/g++/BLAS)"
     "${PIP[@]}" -r requirements.txt
 else
-    log "MOCK-SERVER install (light, no dlib) — yunet + mobilefacenet path only"
+    log "LIGHT install (no dlib) — YuNet + MobileFaceNet only. Use --config config.yunet.yaml."
     "${PIP[@]}" \
         onnxruntime==1.27.0 \
         opencv-python-headless==4.13.0.92 \
@@ -59,8 +62,11 @@ else
         pyyaml==6.0.3
 fi
 
-log "Done. Test against the mock server (started via am-mock-server/run.sh) with:"
-log "  .venv/bin/python client.py --config config.mock-server.yaml --server <photo.jpg>"
-if [ "$MODE" = "mock" ]; then
-    log "For the dlib / real-am-master-server path instead, re-run: ./setup.sh --full"
+log "Done. Start the mock server (am-mock-server/run.sh) and register a face, then identify with:"
+if [ "$MODE" = "full" ]; then
+    log "  .venv/bin/python client.py --server <photo.jpg>                        # default dlib model"
+    log "  .venv/bin/python client.py --config config.yunet.yaml --server <photo.jpg>   # YuNet+MobileFaceNet"
+else
+    log "  .venv/bin/python client.py --config config.yunet.yaml --server <photo.jpg>"
+    log "For the default dlib model too, re-run: ./setup.sh   (installs dlib)"
 fi

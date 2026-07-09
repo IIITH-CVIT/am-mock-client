@@ -1,16 +1,31 @@
-# Face Recognition Client Configuration
-# Copy / edit this file, then run:
-#   python client.py <image>
+# Face Recognition Client — DEFAULT configuration
+# Edit this file, then run:   .venv/bin/python client.py <image>
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ WHICH FACE MODEL?                                                        │
+# │                                                                         │
+# │ This client can recognise faces with one of two models. The mock server │
+# │ enrols BOTH for every registration, so either works out of the box:     │
+# │                                                                         │
+# │   • dlib                  → the DEFAULT (set below). 128-dim.            │
+# │   • YuNet + MobileFaceNet  → the alternate. 512-dim.                     │
+# │                                                                         │
+# │ To switch to YuNet + MobileFaceNet you have two options:                │
+# │   1. Easiest — run with the ready-made preset instead of editing:       │
+# │        .venv/bin/python client.py --config config.yunet.yaml <image>    │
+# │   2. Or edit the two lines marked "SWITCH HERE" further down.           │
+# └─────────────────────────────────────────────────────────────────────────┘
 
 # ── Active mode ────────────────────────────────────────────────
-# "server"     — send embeddings to the FRU API; fall back to diagnostic if
-#                the server is unreachable.
+# "server"     — send embeddings to the server; fall back to the local
+#                diagnostic DB if the server is unreachable.
 # "diagnostic" — local SQLite only, no network required.
 mode: server
 
 # ── Server settings (mode: server) ────────────────────────────
 server:
-  url: "http://localhost:8100"
+  url: "http://localhost:8000"   # the mock server (am-mock-server/run.sh).
+                                 # For a real am-master-server, put its address here.
   timeout: 10                    # per-request timeout in seconds
 
 # ── Diagnostic / offline settings (mode: diagnostic) ──────────
@@ -26,24 +41,18 @@ models:
   mobilefacenet: ./models/mobilefacenet.onnx
 
 # ── Face detection ─────────────────────────────────────────────
-# Mirrors am-master-server's DlibBackend (app/core/face_rec.py):
-# HOG detector, number_of_times_to_upsample=1, no confidence gate
-# server-side. yunet (ONNX) is kept as the selectable alternate,
-# matching am-master-server's AurafaceBackend instead.
 detection:
-  detector: dlib                  # dlib (HOG, matches server's DlibBackend) | yunet (ONNX, matches AurafaceBackend)
-  threshold: 0.3                  # detector confidence threshold (dlib default 0.3, yunet default 0.5)
+  detector: dlib                  # <<< SWITCH HERE: dlib  (or "yunet" for the alternate)
+  threshold: 0.3                  # detector confidence (dlib default 0.3, yunet default 0.5)
   input_size: 640                 # yunet letterbox size — higher finds smaller faces, slower
   num_upsamples: 1                # dlib only — higher finds smaller faces, slower
 
 # ── Embedding extraction ───────────────────────────────────────
-# dlib (128-dim) pairs with detector: dlib — matches server's
-# dlib_threshold=0.6 (L2). mobilefacenet (512-dim) pairs with
-# detector: yunet — matches server's auraface_threshold=0.8 (L2).
-# Don't mix pairings; the server never re-derives embeddings from
-# pixels, so vectors must match what's actually enrolled.
+# Keep this paired with the detector above: dlib+dlib, or yunet+mobilefacenet.
+# Never mix them — the server stores one vector per model and matches by which
+# one you send.
 embedder:
-  model: dlib                     # dlib (128-dim, matches server's DlibBackend) | mobilefacenet (512-dim, matches AurafaceBackend)
+  model: dlib                     # <<< SWITCH HERE: dlib  (or "mobilefacenet" for the alternate)
   num_jitters: 1                  # dlib only — >1 = more stable embeddings, slower
 
 # ── Camera ────────────────────────────────────────────────────

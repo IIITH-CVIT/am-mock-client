@@ -55,7 +55,9 @@ def test_identify_logs_dimension_mismatch_guidance():
         result = client.identify(np.zeros(128, dtype=np.float32))
         assert result is None
         error_calls = [str(c) for c in mock_logger.error.call_args_list]
-        assert any("config.mock-server.yaml" in c for c in error_calls)
+        # Guidance must point at the valid detector/embedder pairings.
+        assert any("valid pair" in c for c in error_calls)
+        assert any("config.yunet.yaml" in c for c in error_calls)
 
 def test_identify_generic_error_does_not_trigger_dimension_guidance():
     response_500 = {"error": "500 Server Error", "status_code": 500}

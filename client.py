@@ -80,7 +80,7 @@ _DLIB_MISSING_MSG = (
 _DEFAULT_CONFIG: Dict[str, Any] = {
     "mode": "server",
     "server": {
-        "url": "http://localhost:8100",
+        "url": "http://localhost:8000",
         "timeout": 10,
     },
     "diagnostic": {
@@ -170,7 +170,7 @@ class Config:
 
     @property
     def server_url(self) -> str:
-        return str(self.get("server.url", "http://localhost:8100"))
+        return str(self.get("server.url", "http://localhost:8000"))
 
     @property
     def server_timeout(self) -> int:
@@ -763,20 +763,20 @@ class ServerClient:
         except requests.RequestException as e:
             return {"error": str(e)}
     
-    # NOTE: this only fires against a mock server with the 512-dim validation fix
-    # applied (returns 400 on wrong-dim vectors). Against an unfixed server, a
-    # dimension mismatch looks identical to a genuine no-match: check
-    # `Embedding: N-dim` in the log above and compare against the server's gallery.
+    # NOTE: the mock server accepts BOTH a 128-dim dlib vector and a 512-dim
+    # mobilefacenet vector, so a 400 "dimensions" error here means the vector is
+    # neither (e.g. a mismatched detector/embedder pairing, or a non-standard
+    # model), not "wrong model for this server".
     def identify(self, embedding: np.ndarray) -> Optional[str]:
         result = self._post(embedding)
         if "error" in result:
             detail = result["error"]
             if result.get("status_code") == 400 and "dimensions" in str(detail):
                 logger.error(
-                "Dimension mismatch talking to the server (sent %d-dim). "
-                "If you're testing against iiith-cvit-am-mock-server, it only "
-                "supports the yunet/mobilefacenet pairing (512-dim). Run with "
-                "--config config.mock-server.yaml instead of config.yaml.",
+                "The server rejected the vector dimension (sent %d-dim). Make sure "
+                "detection.detector and embedder.model form a valid pair: dlib+dlib "
+                "(128-dim) or yunet+mobilefacenet (512-dim). The config.yaml / "
+                "config.yunet.yaml presets are already paired correctly.",
                 embedding.shape[0],
                 )
             else:

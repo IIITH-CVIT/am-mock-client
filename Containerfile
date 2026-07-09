@@ -22,6 +22,7 @@ COPY config.yunet.yaml ./
 COPY models/ ./models/
 
 RUN pip install --no-cache-dir \
+    setuptools==80.9.0 \
     dlib==20.0.1 \
     face_recognition_models==0.3.0 \
     numpy==2.4.6 \

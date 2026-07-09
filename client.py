@@ -70,7 +70,7 @@ except ModuleNotFoundError:  # pragma: no cover - depends on install profile
 _DLIB_MISSING_MSG = (
     "The dlib backend is selected (detector/embedder: dlib) but the 'dlib' and "
     "'face_recognition_models' packages aren't installed. Install them, or switch "
-    "to the yunet/mobilefacenet pairing (e.g. --config config.mock-server.yaml)."
+    "to the yunet/mobilefacenet pairing (e.g. --config config.yunet.yaml)."
 )
 
 # ─────────────────────────────────────────────────────────────

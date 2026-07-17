@@ -10,12 +10,11 @@ A Python-based face recognition client that detects faces in images or a live ca
 Input Image / Live Camera Frame
      │
      ▼
-DlibFaceDetector (HOG)           ← detects face, returns bbox + score
-YuNetDetector (ONNX)             ← alternate; bbox + 5-point landmarks
-     │
+FaceDetector (YuNet, native OpenCV 5 — cv2.FaceDetectorYN)
+     │                                bbox + 5-point landmarks
      ▼
-DlibEmbedder (ResNet 128-dim)    ← raw embedding (un-normalised)
-MobileFaceNetEmbedder (512-dim)  ← alternate; L2-normalised via ONNX, landmark-aligned
+SFaceEmbedder (128-dim)           ← default; native cv2.FaceRecognizerSF, L2-normalised
+AuraFaceEmbedder (512-dim)        ← alternate; ONNX R100 (ArcFace-style), L2-normalised, landmark-aligned
      │
      ▼
 ┌──────────────┐     ┌──────────────────────────┐
@@ -28,22 +27,23 @@ MobileFaceNetEmbedder (512-dim)  ← alternate; L2-normalised via ONNX, landmark
  Prints name (or overlays it live on the camera window)
 ```
 
-This client can recognise faces with either of two models, and the **mock server
-enrols both** for every registration, so either works out of the box:
+Detection is always YuNet (`cv2.FaceDetectorYN`, built into OpenCV 5 — no more
+manual ONNX decode, no dlib). Only the **embedder** varies, and it must match
+whatever the server is enrolled with (`models.embedder_model` in the server's
+own `config.yaml` — the mock server enrols vectors from exactly **one** model
+at a time, never both):
 
-- **dlib (HOG + ResNet, 128-dim)** — the **default** (`config.yaml`). Mirrors
-  `am-master-server`'s `DlibBackend` exactly (HOG detection with
-  `number_of_times_to_upsample=1`, 128-dim raw embedding, server-side L2 cutoff
-  `dlib_threshold=0.6`).
-- **YuNet + MobileFaceNet (512-dim)** — the alternate (`config.yunet.yaml`).
-  Mirrors `am-master-server`'s `AurafaceBackend` (512-dim L2-normalised,
-  server-side L2 cutoff `auraface_threshold=0.8`).
+- **sface (128-dim)** — the **default** (`config.yaml`). `cv2.FaceRecognizerSF`,
+  native OpenCV 5, no `onnxruntime` needed for this path.
+- **auraface / R100 (512-dim)** — the alternate (`config.auraface.yaml`).
+  `aurar100.onnx` (ArcFace-style ResNet-100), via `onnxruntime`, L2-normalised,
+  landmark-aligned into the 112×112 ArcFace reference pose.
 
-**The detector and embedder are always used as a matched pair** — dlib+dlib, or
-yunet+mobilefacenet — never mixed. The server never re-derives embeddings from
-pixels; it just searches whichever gallery matches the size of the vector you send
-(128 → dlib, 512 → mobilefacenet). To switch models you change one config setting
-(or pass `--config config.yunet.yaml`); nothing on the server side changes.
+**Never mix embedders against the same server/DB** — the server matches by
+vector dimension and whatever model it's configured with; the client and
+server must agree. To switch, change one config setting (or pass
+`--config config.auraface.yaml`); nothing about the detector changes either
+way.
 
 **Two modes:**
 
@@ -65,50 +65,33 @@ Recognise someone against the mock server in four commands (assumes `am-mock-ser
 cd ../am-mock-server && ./run.sh
 #    ...then register a face at http://localhost:8000 (see that repo's "How to use")
 
-# 2. Set up this client — native venv + all deps (default includes dlib, ~10-15 min compile)
+# 2. Set up this client — native venv + all deps (prebuilt wheels, no compile)
 cd ../am-mock-client && ./setup.sh
 
-# 3. Identify a photo of the person you registered (default dlib model)
+# 3. Identify a photo of the person you registered (default sface model)
 .venv/bin/python client.py --server photo.jpg
 ```
 
-Expect `>>> Recognised: <name>`. That uses the **default dlib model**. To use the
-YuNet+MobileFaceNet model instead, add `--config config.yunet.yaml` (and you can
-skip the dlib compile with `./setup.sh --light`). Step-by-step detail (and the
-offline/diagnostic flow) is under [`## How to use`](#how-to-use) below; full setup
-options under [`### Setup`](#setup).
+Expect `>>> Recognised: <name>`. That uses the **default sface model**. If the
+server is instead enrolled with `auraface`, add `--config config.auraface.yaml`.
+Step-by-step detail (and the offline/diagnostic flow) is under
+[`## How to use`](#how-to-use) below; full setup options under
+[`### Setup`](#setup).
 
 ---
-
-## Known Issues & Fixes (testing against the mock server)
-
-- **`ServerClient.identify()` read dead schema fields**: was falling back to `visitor_name`/`similarity`, neither of which exist in the server's actual `IdentifyResponse`. Fixed: now reads `name`/`confidence`/`distance` directly and logs all three, instead of merging `distance` (lower=better) into a `sim` label that implied higher=better. Covered by `tests/test_server_client.py`.
-
-- **The mock server now enrols both models, so the default `config.yaml` (dlib) works against it directly.** (Earlier, the mock only implemented the 512-dim `yunet`/`mobilefacenet` pairing, and a separate `config.mock-server.yaml` was needed.) Today: `config.yaml` is the dlib default and points at the mock server (`localhost:8000`); `config.yunet.yaml` is the ready-made 512-dim alternate. Both hit the same server. A runtime guard in `ServerClient.identify()` still catches a genuinely wrong vector size (neither 128 nor 512 — e.g. a mismatched detector/embedder pairing) and logs which pairings are valid.
-
-- **`server.url` used to point at the real server by default**: `config.yaml` and `client.py`'s built-in default were `localhost:8100` (the real `am-master-server`). Since this client ships as a matched pair with the mock server, the default is now `localhost:8000` (the mock) so it works out of the box — `config.yaml` and `config.yunet.yaml` both use it. For a real `am-master-server`, change `server.url` in `config.yaml` to your deployment's address.
-
-- **Fatal errors called `sys.exit(1)` deep in the client**: `_load_image`, `_ensure_models`, `_detect_and_embed`, camera-open and model-init all exited the process directly, so they couldn't be unit-tested (the test runner itself would exit). Fixed: these now raise a typed `ClientError`, and `main()` is the single place that catches it and translates it to a clean `exit(1)`. User-facing behaviour is unchanged (a logged error and exit code `1`, no traceback), but every function below `main()` is now importable and testable. Error paths are covered by `tests/test_client_errors.py`.
-
-- **`import dlib` / `import face_recognition_models` at module top made `client.py` unimportable without the (heavy, compiled) dlib wheel** — including for tests using only the `yunet`/`mobilefacenet` ONNX pairing. Fixed: both are now imported lazily; `client.py` imports fine without them, and the dlib-backed detector/embedder raise a clear `ClientError` only if the dlib backend is actually selected while the packages are missing.
-
-- **`DiagnosticDB.search` / `search_topk` carried ~30 lines of near-duplicated load/dim-filter/cosine logic**: maintainability risk, no functional bug. Fixed: the shared work is now one private `_scored_candidates()` helper; `search()` applies the argmax + threshold and `search_topk()` sorts + slices. Behaviour is unchanged (including that the dim-mismatch warning fires from `search()` but not the `search_topk()` call right after it). Covered by `tests/test_diagnostic_db.py`.
-
-- **`ServerClient._post` formats the face vector with `%.6f` (6 decimal places) before sending** — flagged as an undocumented truncation. Examined, not just documented: embeddings are L2-normalised (or small-magnitude raw dlib descriptors), so over 2000 random 512-d unit vectors `%.6f` introduces at most ~5e-7 per component / ~7e-6 whole-vector L2 error, shifting the server's match distance by ≤1.5e-6 — six orders of magnitude below the `0.8` threshold, and it never changed a nearest-neighbour pick. Left as-is (full float32 round-trip needs ~9 significant figures and buys nothing for matching); the rationale is now a comment in `_post`.
-
-- **`_ensure_models()` validated the ONNX weights but not the two dlib `.dat` files** (`dlib_face_recognition_resnet_model_v1.dat`, `shape_predictor_5_face_landmarks.dat`) that the dlib embedder loads from the `face_recognition_models` package. A broken/partial install failed with an obscure dlib `RuntimeError` mid-run instead of the clear up-front message the ONNX paths got. Fixed: when the dlib embedder is selected, `_ensure_models` now checks the package is importable and both `.dat` files exist, failing fast with the same "Missing model" message + a reinstall hint. Covered by `tests/test_client_errors.py`.
 
 ## Project Structure
 
 ```
 Am-FaceRecognition-Client/
-├── client.py               # Main client (all logic)
-├── config.yaml             # DEFAULT config — dlib model, mock server :8000
-├── config.yunet.yaml       # Alternate preset — YuNet + MobileFaceNet (512-dim)
-├── environment.yml         # Conda environment spec
+├── client.py                # Main client (all logic)
+├── config.yaml               # DEFAULT config — sface model, mock server :8000
+├── config.auraface.yaml      # Alternate preset — AuraFace R100 (512-dim)
+├── environment.yml           # Conda environment spec
 ├── models/
-│   ├── face_detection_yunet_2023mar.onnx  # YuNet face detector
-│   └── mobilefacenet.onnx                 # MobileFaceNet embedder
+│   ├── face_detection_yunet_2026may.onnx     # YuNet face detector (native OpenCV 5)
+│   ├── face_recognition_sface_2021dec.onnx   # SFace embedder (native OpenCV 5)
+│   └── aurar100.onnx                         # AuraFace R100 embedder (onnxruntime)
 ├── diagnostic_mode/
 │   ├── diagnostic.db       # SQLite face database (auto-created)
 │   └── faces/              # Saved face crops from --register
@@ -120,25 +103,20 @@ Am-FaceRecognition-Client/
 ## Requirements
 
 - Python 3.13
-- YuNet + MobileFaceNet ONNX models in `models/` (bundled in this repo; same files as `mock-server/models/`) — used by the YuNet+MobileFaceNet model
-- dlib 20.0.1 + its model files (from the `face_recognition_models` package) — used by the **default** dlib model. `client.py` imports dlib lazily, so the client still runs without it if you only ever use the YuNet+MobileFaceNet model (`./setup.sh --light`).
+- `opencv-python-headless>=5.0.0` (ships YuNet detection + SFace recognition natively — no compile step)
+- `onnxruntime` (only exercised by the `auraface` embedder path)
+- The three `.onnx` models in `models/` (bundled in this repo; same files as `mock-server/models/`)
 
 ### Setup
 
 **Quickest — `./setup.sh` (recommended):** bootstraps a native `.venv` and installs
-every dependency in one go. No manual pip steps, no `sudo`.
+every dependency in one go. No manual pip steps, no `sudo`, no compile step.
 
 ```bash
-./setup.sh           # default: installs EVERYTHING, including dlib (~10-15 min compile)
-./setup.sh --light   # skip dlib — YuNet + MobileFaceNet only (fast, no compile)
+./setup.sh
 ```
 
-The **default** installs dlib because the default `config.yaml` uses the dlib
-model. dlib compiles from source (~10-15 min, needs `cmake`/`g++`/BLAS, which most
-Linux boxes have). If you only plan to use the YuNet+MobileFaceNet model, run
-`./setup.sh --light` (installs just `onnxruntime` / `opencv` / `numpy` / `requests`
-/ `pyyaml`, no compile) and always pass `--config config.yunet.yaml`. The script
-prefers `uv` and falls back to `python3 -m venv`; it's safe to re-run.
+The script prefers `uv` and falls back to `python3 -m venv`; it's safe to re-run.
 
 **Manual alternative — create the virtual environment yourself:**
 
@@ -163,10 +141,10 @@ python3 -m pytest tests/test_server_client.py tests/test_client_errors.py tests/
 ```
 
 - `test_server_client.py` — server response parsing (`IdentifyResponse` field names, error/dimension-mismatch handling).
-- `test_client_errors.py` — the `ClientError` error paths (missing image, no face detected, missing models, dlib backend selected without the dlib packages).
+- `test_client_errors.py` — the `ClientError` error paths (missing image, no face detected, missing models).
 - `test_diagnostic_db.py` — local `DiagnosticDB` cosine search: best-match-above-threshold, top-K ordering, dimension-mismatch gating, and the empty-DB path.
 
-These import `client.py` directly and don't need `dlib`, a camera, or a running server. `tests/test_containerfile.py` is separate: it requires Podman and a built `face-recognition` image (`./build.sh`) and skips automatically if Podman isn't installed.
+These import `client.py` directly and don't need a camera or a running server. `tests/test_containerfile.py` is separate: it requires Podman and a built `face-recognition` image (`./build.sh`) and skips automatically if Podman isn't installed.
 
 ---
 
@@ -176,7 +154,7 @@ These import `client.py` directly and don't need `dlib`, a camera, or a running 
 Docker) with your host's cameras and X display forwarded in, for live camera mode:
 
 ```bash
-./build.sh   # first time / after code changes — installs Podman if missing, then builds (dlib compile ~10-15 min)
+./build.sh   # first time / after code changes — installs Podman if missing, then builds
 ./run.sh     # builds automatically on first run if needed
 ```
 
@@ -191,8 +169,8 @@ This is the simpler path for testing against the mock server. The Podman camera/
 
 ## Configuration
 
-All settings live in `config.yaml` (the default, dlib model). Edit this file before
-running, or use the ready-made `config.yunet.yaml` for the YuNet+MobileFaceNet model.
+All settings live in `config.yaml` (the default, sface model). Edit this file before
+running, or use the ready-made `config.auraface.yaml` for the AuraFace R100 model.
 
 ```yaml
 # Active mode: "server" or "diagnostic"
@@ -209,18 +187,16 @@ diagnostic:
   topk: 3                            # nearest neighbours shown on unknown
 
 models:
-  yunet: ./models/face_detection_yunet_2023mar.onnx
-  mobilefacenet: ./models/mobilefacenet.onnx
+  face_detector_path: ./models/face_detection_yunet_2026may.onnx
+  face_recognizer_path: ./models/face_recognition_sface_2021dec.onnx
+  face_recognizer_auraface_path: ./models/aurar100.onnx
 
 detection:
-  detector: dlib                     # dlib (HOG, matches server's DlibBackend) | yunet (ONNX, matches AurafaceBackend)
-  threshold: 0.3                     # detector confidence threshold (dlib default 0.3, yunet default 0.5)
-  input_size: 640                    # yunet letterbox size — higher finds smaller faces, slower
-  num_upsamples: 1                   # dlib only — higher finds smaller faces, slower
+  threshold: 0.5                     # YuNet score threshold
+  input_size: 640                    # initial square size; each frame's real size is set at detect-time
 
 embedder:
-  model: dlib                        # dlib (128-dim, matches server's DlibBackend) | mobilefacenet (512-dim, matches AurafaceBackend)
-  num_jitters: 1                     # dlib only — >1 = more stable, slower
+  model: sface                       # sface (128-dim, native OpenCV 5) | auraface (512-dim, R100 via onnxruntime)
 
 camera:
   device: 0                          # camera device index (0 = default webcam)
@@ -235,13 +211,14 @@ You can also use a different config file per run:
 ```bash
 .venv/bin/python client.py --config prod.yaml photo.jpg
 ```
-> **Want the YuNet + MobileFaceNet model instead of the default dlib one?**
+> **Want the AuraFace R100 model instead of the default sface one?**
 > Use the ready-made preset instead of editing `config.yaml`:
 > ```bash
-> .venv/bin/python client.py --config config.yunet.yaml <image>
+> .venv/bin/python client.py --config config.auraface.yaml <image>
 > ```
-> It talks to the same mock server (`localhost:8000`) — only the face model differs.
-> The mock server enrols both models per registration, so either works.
+> It talks to the same mock server (`localhost:8000`) — only the embedder differs.
+> Make sure the server's own `models.embedder_model` is also set to `auraface`,
+> since the server enrols one model at a time.
 ---
 
 ## How to use
@@ -257,7 +234,7 @@ Prereq: the mock server is running (`am-mock-server/run.sh`) and you've register
 ```bash
 .venv/bin/python client.py --server alice.jpg
 ```
-Using the **default dlib model**, the client detects the face, computes a 128-dim dlib descriptor, POSTs it to `http://localhost:8000/api/v1/identify/`, and prints the server's answer:
+Using the **default sface model**, the client detects the face, computes a 128-dim SFace embedding, POSTs it to `http://localhost:8000/api/v1/identify/`, and prints the server's answer:
 ```
 [INFO] MODE: server (http://localhost:8000)  <- alice.jpg
 [INFO] Face: bbox=(...)  score=0.98
@@ -265,8 +242,8 @@ Using the **default dlib model**, the client detects the face, computes a 128-di
 [INFO] Server -> name='Alice Kumar' confidence = 0.83 distance = 0.34
 >>> Recognised: Alice Kumar
 ```
-- **`distance`** is L2 (lower = better); under the model's cutoff (`0.6` for dlib, `0.8` for MobileFaceNet) = a match.
-- To use the **YuNet + MobileFaceNet** model instead, add `--config config.yunet.yaml` (the log then shows `Embedding: 512-dim`). Both models work because the server enrolled both.
+- **`distance`** is normalised L2 (lower = better); under the server's match threshold (`0.8` by default) = a match.
+- If the server is enrolled with **AuraFace R100** instead, add `--config config.auraface.yaml` (the log then shows `Embedding: 512-dim`).
 - If the server is unreachable, the client automatically falls back to the local diagnostic DB.
 
 ### Tutorial B — offline diagnostic mode (no server)
@@ -274,7 +251,7 @@ Using the **default dlib model**, the client detects the face, computes a 128-di
 Register faces into a local SQLite DB and match against it — no server, no network.
 
 ```bash
-# Register people (default dlib model)
+# Register people (default sface model)
 .venv/bin/python client.py --register Alice alice.jpg
 .venv/bin/python client.py --register Bob   bob.jpg
 
@@ -284,7 +261,7 @@ Register faces into a local SQLite DB and match against it — no server, no net
 ```
 On an unknown face it prints the top-3 nearest matches with similarity scores. Face crops are saved under `diagnostic_mode/faces/`.
 
-> Keep the model consistent within the local DB: faces registered under dlib (128-dim) only match dlib queries, and mobilefacenet (512-dim) only matches mobilefacenet. Pick one model (don't mix `config.yaml` and `config.yunet.yaml` against the same local DB) — or re-register if you switch.
+> Keep the model consistent within the local DB: faces registered under sface (128-dim) only match sface queries, and auraface (512-dim) only matches auraface. Pick one model (don't mix `config.yaml` and `config.auraface.yaml` against the same local DB) — or re-register if you switch.
 
 **Command reference** — every flag:
 
@@ -345,15 +322,15 @@ Total: 3 face(s)
 
 Sends the configured embedder's vector to the FRU API (`POST /api/v1/identify/`).
 
-- Uses **dlib 128-dim** (raw) by default — matches `am-master-server`'s `DlibBackend` enrollment, server-side L2 cutoff `dlib_threshold=0.6`
-- For **512-dim L2-normalised** embeddings instead (matching `AurafaceBackend`, cutoff `auraface_threshold=0.8`), pass `--config config.yunet.yaml` (or set `detection.detector: yunet` + `embedder.model: mobilefacenet`)
+- Uses **sface 128-dim** (L2-normalised) by default
+- For **auraface R100 512-dim** instead, pass `--config config.auraface.yaml` (or set `embedder.model: auraface`) — and make sure the server is enrolled with the matching model
 - If the server is unreachable, **automatically falls back** to the local SQLite database
 
 ### Diagnostic mode
 
 Identifies faces locally using cosine similarity against embeddings stored in `diagnostic_mode/diagnostic.db`.
 
-- Embedding dimension/backend follows `embedder.model` (dlib 128-dim or mobilefacenet 512-dim)
+- Embedding dimension/backend follows `embedder.model` (sface 128-dim or auraface 512-dim)
 - **Cosine similarity** search (vectorised, matches reference `search_diagnostic_faces`)
 - Returns the best match above `cosine_threshold` (default `0.6`)
 - Rows are dimension-gated — switching `embedder.model` won't match faces registered under the other embedder; re-register if you switch
@@ -366,12 +343,14 @@ Identifies faces locally using cosine similarity against embeddings stored in `d
 
 | Component | Backend | Dim | Normalisation | Notes |
 |---|---|---|---|---|
-| Detector | dlib (HOG) | — | — | Default; `number_of_times_to_upsample=1`, no landmarks (bbox-crop alignment) |
-| Detector | YuNet (ONNX) | — | — | Alternate; returns bbox + 5-point landmarks for alignment |
-| Embedder | dlib ResNet (`face_recognition_models`) | 128 | None (raw) | Default; matches `am-master-server`'s `DlibBackend` |
-| Embedder | MobileFaceNet (ONNX) | 512 | L2 | Alternate; matches `am-master-server`'s `AurafaceBackend` |
+| Detector | YuNet (`cv2.FaceDetectorYN`, native OpenCV 5) | — | — | Only detector; returns bbox + 5-point landmarks |
+| Embedder | SFace (`cv2.FaceRecognizerSF`, native OpenCV 5) | 128 | L2 | Default; aligned via `alignCrop()` |
+| Embedder | AuraFace R100 (ONNX, ArcFace-style) | 512 | L2 | Alternate; landmark-aligned into the 112×112 ArcFace pose |
 
-Pairings mirror `am-master-server/app/core/face_rec.py` exactly and **must not be mixed** — the server never re-derives embeddings from pixels, it only vector-searches whatever the client submits and infers the model from vector dimensionality (`app/api/v1/identify.py`). Use dlib detector with dlib embedder, or YuNet detector with MobileFaceNet embedder.
+Mirrors `am-mock-server/app/core/face_engine.py` exactly — the server never
+re-derives embeddings from pixels, it only vector-searches whatever the client
+submits, gated by dimension (`app/api/v1/identify.py`). The client and the
+server it talks to must be configured with the same embedder.
 
 ---
 
@@ -379,33 +358,26 @@ Pairings mirror `am-master-server/app/core/face_rec.py` exactly and **must not b
 
 | File | Source | Used for |
 |---|---|---|
-| `models/face_detection_yunet_2023mar.onnx` | Bundled in this repo (same file as `mock-server/models/`) | YuNet face detection |
-| `models/mobilefacenet.onnx` | Bundled in this repo (same file as `mock-server/models/`) | MobileFaceNet 512-dim embedding |
-| `dlib_face_recognition_resnet_model_v1.dat` | `face_recognition_models` package | dlib 128-dim embedding |
-| `shape_predictor_5_face_landmarks.dat` | `face_recognition_models` package | Face alignment for dlib |
+| `models/face_detection_yunet_2026may.onnx` | Bundled in this repo (same file as `mock-server/models/`) | YuNet face detection |
+| `models/face_recognition_sface_2021dec.onnx` | Bundled in this repo (same file as `mock-server/models/`) | SFace 128-dim embedding |
+| `models/aurar100.onnx` | Bundled in this repo (same file as `mock-server/models/`) | AuraFace R100 512-dim embedding |
 
-`models/*.onnx` are checked out with this repo (relative paths resolve against `config.yaml`'s directory, not the current working directory). dlib model files are bundled with the `face_recognition_models` pip package.
+`models/*.onnx` are checked out with this repo (relative paths resolve against `config.yaml`'s directory, not the current working directory). `aurar100.onnx` is a large (~250MB) R100 backbone — consider Git LFS if repo size becomes a concern.
 
 ---
 
 ## Reference
 
-This client mirrors three references:
+This client mirrors `am-mock-server/app/core/face_engine.py`'s `FaceEngine`:
+one shared YuNet detector (`cv2.FaceDetectorYN`, native OpenCV 5) feeding
+either `cv2.FaceRecognizerSF` (sface, 128-dim) or `aurar100.onnx` via
+`onnxruntime` (auraface, 512-dim) — same preprocessing, same landmark
+alignment, same L2 normalisation. That's why vectors computed here match what
+the mock server enrols, as long as both sides are configured with the same
+`embedder_model`.
 
-- **`am-master-server/app/core/face_rec.py`** (the real production identification backends —
-  primary reference for both detector/embedder pairings):
-  - `DlibBackend` — `face_recognition.face_locations(model="hog", number_of_times_to_upsample=1)`
-    + `face_recognition.face_encodings(...)`, 128-dim. Default pairing here.
-  - `AurafaceBackend` — YuNet (640 input, `score_threshold=0.5`, strides 8/16/32) + landmark-aligned
-    MobileFaceNet, 512-dim L2-normalised. Alternate pairing here.
-  - `RecognitionConfig` (`app/core/config.py`) — server-side match thresholds:
-    `dlib_threshold=0.6`, `auraface_threshold=0.8` (L2 distance, lower is better).
-- Cross-checked against `mock-server/app/core/face_engine.py`, which now implements **both** backends:
-  `FaceEngine` (YuNet + MobileFaceNet — same model files and preprocessing as here, mirroring `AurafaceBackend`)
-  and `DlibEngine` (dlib HOG + ResNet, mirroring `DlibBackend` — byte-for-byte the same vectors this client's
-  dlib path produces). That's why every mock-server registration enrols one of each, and either model matches.
-- The dlib-backend recognition flow from `am-fru-desktop-app-Fru-MacOs/face_recognition_pipeline.py`:
-  - `DlibFaceDetector` — HOG frontal face detector (same `threshold`, `num_upsamples`)
-  - `DlibEmbeddingExtractor` — own HOG re-detect + 5-point shape predictor + ResNet descriptor
-  - `DiagnosticFacePipeline` — offline SQLite pipeline with cosine similarity search
-  - `DatabaseManager.search_diagnostic_faces()` — vectorised cosine similarity, top-K logging
+Note: the production `am-master-server` (`app/core/face_rec.py`) has not yet
+migrated off its older `DlibBackend`/`AurafaceBackend` (MobileFaceNet)
+pairings — this client will not match a real `am-master-server` deployment
+until that side is updated to sface/auraface too. Point `server.url` at the
+mock server, or a migrated deployment, accordingly.

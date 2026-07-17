@@ -3,7 +3,7 @@
 These lock the behaviour of the local cosine-similarity store after the
 _scored_candidates() dedup refactor (finding #5): a real match above threshold,
 top-K ordering, the dimension-mismatch gate, and the empty-DB path. They run
-against a throwaway SQLite file in a tmp dir — no server, camera, or dlib needed.
+against a throwaway SQLite file in a tmp dir — no server or camera needed.
 """
 
 import numpy as np

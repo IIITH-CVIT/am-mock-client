@@ -20,6 +20,9 @@ env/
 *.tiff
 *.webp
 
+# Large model weights (too big for git; loaded at runtime from ./models)
+models/aurar100.onnx
+
 # Env / secrets
 .env
 .env.*

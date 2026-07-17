@@ -37,6 +37,6 @@ ensure_podman() {
 }
 
 ensure_podman
-log "Building 'face-recognition' image (dlib compiles from source — ~10-15 min the first time)..."
+log "Building 'face-recognition' image..."
 podman build -t face-recognition .
 log "Build complete. Run the live camera with: ./run.sh"

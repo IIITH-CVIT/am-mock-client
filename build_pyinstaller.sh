@@ -9,9 +9,7 @@ pyinstaller \
     --onefile \
     --name face-recognition-client \
     --collect-all onnxruntime \
-    --collect-all face_recognition_models \
     --collect-all cv2 \
-    --collect-all dlib \
     --hidden-import onnxruntime.capi._pybind_state \
     client.py
 

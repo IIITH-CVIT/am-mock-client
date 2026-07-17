@@ -24,15 +24,17 @@ Usage:
     # Use a specific config file (default: config.yaml):
     .venv/bin/python client.py --config my_config.yaml <image_path>
 
-Detection + embedding backends (config.yaml: detection.detector / embedder.model)
-mirror am-master-server's two identification backends (app/core/face_rec.py) so
-embeddings computed here match what the server has enrolled. The two pairings
-are never mixed — pick one:
-  - dlib (HOG + ResNet)   — default; matches DlibBackend: HOG upsample=1,
-                            128-dim raw embedding, server-side L2 cutoff 0.6
-  - YuNet + MobileFaceNet — alternate; matches AurafaceBackend: YuNet (ONNX)
-                            detection + 5-point landmarks, 512-dim L2-normalised
-                            embedding, server-side L2 cutoff 0.8
+Detection + embedding backends (config.yaml: embedder.model) mirror
+am-mock-server's FaceEngine (app/core/face_engine.py) so embeddings computed
+here match what the server has enrolled. One detector, two embedders — never
+mixed, pick one:
+  - Detection: cv2.FaceDetectorYN (YuNet, native OpenCV 5) — bbox + 5-point
+               landmarks, used by both embedders below.
+  - sface     — default; cv2.FaceRecognizerSF (native OpenCV 5, no
+                onnxruntime), 128-dim L2-normalised, aligned via alignCrop().
+  - auraface  — alternate; aurar100.onnx (ArcFace-style R100, via
+                onnxruntime), 512-dim L2-normalised, aligned via the 112x112
+                ArcFace reference landmark warp.
 
 Diagnostic mode mirrors the DiagnosticFacePipeline + DatabaseManager pattern
 from the reference (am-fru-desktop-app-Fru-MacOs/database.py):
@@ -56,23 +58,6 @@ import onnxruntime as ort
 import requests
 import yaml
 
-# dlib + its model-weights package are imported lazily: the yunet/mobilefacenet
-# (ONNX) backends don't need them, and deferring the import lets client.py be
-# imported for unit tests without the heavy compiled dlib wheel installed. The
-# dlib-backed classes raise a clear ClientError at construction if it's missing.
-try:
-    import dlib
-    import face_recognition_models as _face_rec_models
-except ModuleNotFoundError:  # pragma: no cover - depends on install profile
-    dlib = None
-    _face_rec_models = None
-
-_DLIB_MISSING_MSG = (
-    "The dlib backend is selected (detector/embedder: dlib) but the 'dlib' and "
-    "'face_recognition_models' packages aren't installed. Install them, or switch "
-    "to the yunet/mobilefacenet pairing (e.g. --config config.yunet.yaml)."
-)
-
 # ─────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────
@@ -90,18 +75,16 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
         "topk": 3,
     },
     "models": {
-        "yunet": "./models/face_detection_yunet_2023mar.onnx",
-        "mobilefacenet": "./models/mobilefacenet.onnx",
+        "face_detector_path": "./models/face_detection_yunet_2026may.onnx",
+        "face_recognizer_path": "./models/face_recognition_sface_2021dec.onnx",
+        "face_recognizer_auraface_path": "./models/aurar100.onnx",
     },
     "detection": {
-        "detector": "dlib",
-        "threshold": 0.3,
+        "threshold": 0.5,
         "input_size": 640,
-        "num_upsamples": 1,
     },
     "embedder": {
-        "model": "dlib",
-        "num_jitters": 1,
+        "model": "sface",
     },
     "camera": {
         "device": 0,
@@ -201,36 +184,34 @@ class Config:
         return path
 
     @property
-    def yunet_model(self) -> str:
-        return self._resolve_path(self.get("models.yunet", "./models/face_detection_yunet_2023mar.onnx"))
+    def face_detector_path(self) -> str:
+        return self._resolve_path(
+            self.get("models.face_detector_path", "./models/face_detection_yunet_2026may.onnx")
+        )
 
     @property
-    def mobilefacenet_model(self) -> str:
-        return self._resolve_path(self.get("models.mobilefacenet", "./models/mobilefacenet.onnx"))
+    def face_recognizer_path(self) -> str:
+        return self._resolve_path(
+            self.get("models.face_recognizer_path", "./models/face_recognition_sface_2021dec.onnx")
+        )
 
     @property
-    def detector_backend(self) -> str:
-        return str(self.get("detection.detector", "dlib")).lower()
+    def face_recognizer_auraface_path(self) -> str:
+        return self._resolve_path(
+            self.get("models.face_recognizer_auraface_path", "./models/aurar100.onnx")
+        )
 
     @property
     def detection_threshold(self) -> float:
-        return float(self.get("detection.threshold", 0.3))
+        return float(self.get("detection.threshold", 0.5))
 
     @property
-    def yunet_input_size(self) -> int:
+    def face_detector_input_size(self) -> int:
         return int(self.get("detection.input_size", 640))
 
     @property
-    def num_upsamples(self) -> int:
-        return int(self.get("detection.num_upsamples", 1))
-
-    @property
     def embedder_model(self) -> str:
-        return str(self.get("embedder.model", "dlib")).lower()
-
-    @property
-    def num_jitters(self) -> int:
-        return int(self.get("embedder.num_jitters", 1))
+        return str(self.get("embedder.model", "sface")).lower()
 
     @property
     def camera_device(self) -> int:
@@ -268,12 +249,10 @@ class ClientError(Exception):
 
 
 # ─────────────────────────────────────────────────────────────
-# Verify the model weights required by the configured detector/
-# embedder are present, and fail fast with a clear message if not:
-#   - ONNX files (yunet/mobilefacenet) are bundled in ./models/
-#     (same files as mock-server/models/ — no auto-download).
-#   - dlib .dat files (dlib backend) ship inside the
-#     face_recognition_models pip package, not ./models/.
+# Verify the model weights required by the configured embedder are
+# present, and fail fast with a clear message if not. All weights are
+# ONNX files bundled in ./models/ (same files as mock-server/models/
+# — no auto-download).
 # ─────────────────────────────────────────────────────────────
 
 def _raise_missing(missing: list, remediation: str) -> None:
@@ -283,44 +262,19 @@ def _raise_missing(missing: list, remediation: str) -> None:
 
 
 def _ensure_models(cfg: Config) -> None:
-    # ONNX weights bundled in ./models/ (yunet detector / mobilefacenet embedder)
-    onnx_required = []
-    if cfg.detector_backend == "yunet":
-        onnx_required.append(("YuNet face detector", cfg.yunet_model))
-    if cfg.embedder_model == "mobilefacenet":
-        onnx_required.append(("MobileFaceNet embedder", cfg.mobilefacenet_model))
+    required = [("YuNet face detector", cfg.face_detector_path)]
+    if cfg.embedder_model == "auraface":
+        required.append(("AuraFace R100 embedder", cfg.face_recognizer_auraface_path))
+    else:
+        required.append(("SFace embedder", cfg.face_recognizer_path))
 
-    onnx_missing = [(label, path) for label, path in onnx_required if not os.path.exists(path)]
-    if onnx_missing:
+    missing = [(label, path) for label, path in required if not os.path.exists(path)]
+    if missing:
         _raise_missing(
-            onnx_missing,
-            f"Copy the missing .onnx file(s) into {os.path.dirname(onnx_missing[0][1])} "
+            missing,
+            f"Copy the missing .onnx file(s) into {os.path.dirname(missing[0][1])} "
             f"(same files as mock-server/models/).",
         )
-
-    # The dlib embedder loads two .dat weight files from inside the
-    # face_recognition_models pip package (see DlibEmbedder.__init__). Validate
-    # them here so a missing package or a broken/partial install fails with the
-    # same clear message as the ONNX case, instead of an obscure RuntimeError
-    # raised by dlib deep in the embedder mid-run. (The dlib detector needs only
-    # dlib's built-in HOG detector, so the .dat files matter only for embedding.)
-    if cfg.embedder_model == "dlib":
-        if _face_rec_models is None:
-            raise ClientError(_DLIB_MISSING_MSG)
-        dat_dir = os.path.join(os.path.dirname(_face_rec_models.__file__), "models")
-        dat_required = [
-            ("dlib face-recognition ResNet weights",
-             os.path.join(dat_dir, "dlib_face_recognition_resnet_model_v1.dat")),
-            ("dlib 5-point shape predictor",
-             os.path.join(dat_dir, "shape_predictor_5_face_landmarks.dat")),
-        ]
-        dat_missing = [(label, path) for label, path in dat_required if not os.path.exists(path)]
-        if dat_missing:
-            _raise_missing(
-                dat_missing,
-                "These ship inside the 'face_recognition_models' package; reinstall it "
-                "(e.g. pip install --force-reinstall face_recognition_models).",
-            )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -333,190 +287,96 @@ class FaceDetection:
         bbox: Tuple[int, int, int, int],
         score: float,
         landmarks: Optional[List[Tuple[float, float]]] = None,
+        raw: Optional[np.ndarray] = None,
     ):
         self.bbox      = bbox        # (x1, y1, x2, y2)
         self.score     = score
-        self.landmarks = landmarks   # 5-point (x, y) list — only set by YuNet
+        self.landmarks = landmarks   # 5-point (x, y) list
+        self.raw       = raw         # native cv2.FaceDetectorYN row — needed by SFace's alignCrop()
 
 
 # ─────────────────────────────────────────────────────────────
-# Face detection — dlib HOG detector
-# Mirrors reference DlibFaceDetector in face_recognition_pipeline.py
+# Face detection — YuNet, native OpenCV 5 (cv2.FaceDetectorYN)
+# Mirrors mock-server FaceEngine._detect_face: no manual ONNX decode
+# needed any more, OpenCV 5 ships YuNet inference built in. Returns
+# bbox + 5-point landmarks (+ the raw detector row, for SFace).
 # ─────────────────────────────────────────────────────────────
 
-class DlibFaceDetector:
+class FaceDetector:
     def __init__(self, cfg: Config):
-        if dlib is None:
-            raise ClientError(_DLIB_MISSING_MSG)
-        self.threshold     = cfg.detection_threshold
-        self.num_upsamples = cfg.num_upsamples
-        self._detector     = dlib.get_frontal_face_detector()
-        logger.info(
-            "DlibFaceDetector (HOG) | upsamples=%d  threshold=%.2f",
-            self.num_upsamples, self.threshold,
-        )
-
-    def detect(self, frame_bgr: np.ndarray) -> Optional[FaceDetection]:
-        if frame_bgr is None or frame_bgr.ndim != 3:
-            return None
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        dets, scores, _ = self._detector.run(rgb, self.num_upsamples, self.threshold)
-        if not dets:
-            return None
-        best = int(np.argmax(scores))
-        d = dets[best]
-        return FaceDetection(
-            bbox=(d.left(), d.top(), d.right(), d.bottom()),
-            score=float(scores[best]),
-        )
-
-
-# ─────────────────────────────────────────────────────────────
-# Face detection — YuNet ONNX detector
-# Mirrors mock-server FaceEngine._detect_face: manual multi-scale
-# decode (letterbox to a square input, strides 8/16/32), returns
-# bbox + 5-point landmarks for downstream alignment.
-# ─────────────────────────────────────────────────────────────
-
-class YuNetDetector:
-    STRIDES = (8, 16, 32)
-
-    def __init__(self, cfg: Config):
-        model_path = cfg.yunet_model
+        model_path = cfg.face_detector_path
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"YuNet model not found: {model_path}")
-        self.input_size      = cfg.yunet_input_size
-        self.score_threshold = cfg.detection_threshold
-        self._session        = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self._input_name     = self._session.get_inputs()[0].name
-        self._output_names   = [o.name for o in self._session.get_outputs()]
+        size = cfg.face_detector_input_size
+        self._detector = cv2.FaceDetectorYN.create(
+            model_path, "", (size, size),
+            score_threshold=cfg.detection_threshold,
+        )
         logger.info(
-            "YuNetDetector (ONNX) | input=%dx%d  threshold=%.2f",
-            self.input_size, self.input_size, self.score_threshold,
+            "FaceDetector (YuNet, OpenCV 5 native) | input=%dx%d  threshold=%.2f",
+            size, size, cfg.detection_threshold,
         )
 
     def detect(self, frame_bgr: np.ndarray) -> Optional[FaceDetection]:
         if frame_bgr is None or frame_bgr.ndim != 3:
             return None
         h, w = frame_bgr.shape[:2]
-        scale = min(self.input_size / w, self.input_size / h)
-        nw, nh = int(w * scale), int(h * scale)
-
-        canvas = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
-        canvas[:nh, :nw, :] = cv2.resize(frame_bgr, (nw, nh))
-        blob = canvas.astype(np.float32).transpose(2, 0, 1)[None, ...]
-
-        outputs = self._session.run(self._output_names, {self._input_name: blob})
-        by_name = dict(zip(self._output_names, outputs))
-
-        best = None  # (score, bbox, landmarks)
-        for stride in self.STRIDES:
-            cls  = by_name[f"cls_{stride}"][0]
-            obj  = by_name[f"obj_{stride}"][0]
-            bbox = by_name[f"bbox_{stride}"][0]
-            kps  = by_name[f"kps_{stride}"][0]
-            fm_width = self.input_size // stride
-
-            scores = np.sqrt(np.clip(cls[:, 0], 0.0, 1.0) * np.clip(obj[:, 0], 0.0, 1.0))
-            for i in np.where(scores > self.score_threshold)[0]:
-                score = float(scores[i])
-                if best is not None and score <= best[0]:
-                    continue
-
-                col, row = int(i % fm_width), int(i // fm_width)
-                cx = (col + bbox[i, 0]) * stride
-                cy = (row + bbox[i, 1]) * stride
-                bw = np.exp(bbox[i, 2]) * stride
-                bh = np.exp(bbox[i, 3]) * stride
-
-                bbox_out = (
-                    int(max(0, min((cx - bw / 2.0) / scale, w))),
-                    int(max(0, min((cy - bh / 2.0) / scale, h))),
-                    int(max(0, min((cx + bw / 2.0) / scale, w))),
-                    int(max(0, min((cy + bh / 2.0) / scale, h))),
-                )
-                landmarks = [
-                    (
-                        max(0.0, min(float((col + kps[i, 2 * k]) * stride / scale), float(w))),
-                        max(0.0, min(float((row + kps[i, 2 * k + 1]) * stride / scale), float(h))),
-                    )
-                    for k in range(5)
-                ]
-                best = (score, bbox_out, landmarks)
-
-        if best is None:
+        self._detector.setInputSize((w, h))
+        _, faces = self._detector.detect(frame_bgr)
+        if faces is None or len(faces) == 0:
             return None
-        score, bbox_out, landmarks = best
-        return FaceDetection(bbox=bbox_out, score=score, landmarks=landmarks)
+
+        face_row = faces[int(np.argmax(faces[:, 14]))]
+        x, y, bw, bh = face_row[0:4]
+        bbox = (
+            max(0, int(x)), max(0, int(y)),
+            min(w, int(x + bw)), min(h, int(y + bh)),
+        )
+        landmarks = [(float(face_row[4 + 2 * k]), float(face_row[5 + 2 * k])) for k in range(5)]
+        return FaceDetection(bbox=bbox, score=float(face_row[14]), landmarks=landmarks, raw=face_row)
 
 
 # ─────────────────────────────────────────────────────────────
 # Embedders
 # ─────────────────────────────────────────────────────────────
 
-class DlibEmbedder:
-    """128-dim raw embeddings via dlib ResNet (mirrors reference DlibEmbeddingExtractor)."""
+class SFaceEmbedder:
+    """128-dim L2-normalised embeddings via cv2.FaceRecognizerSF (native OpenCV 5).
+
+    Mirrors mock-server FaceEngine.embed (sface path): alignCrop() on the raw
+    detector row, then feature() for the embedding.
+    """
 
     DIM = 128
 
     def __init__(self, cfg: Config):
-        if dlib is None or _face_rec_models is None:
-            raise ClientError(_DLIB_MISSING_MSG)
-        self.num_jitters = cfg.num_jitters
-
-        # Works in both normal Python and PyInstaller frozen bundles
-        models_dir = os.path.join(os.path.dirname(_face_rec_models.__file__), "models")
-        self._face_encoder    = dlib.face_recognition_model_v1(
-            os.path.join(models_dir, "dlib_face_recognition_resnet_model_v1.dat")
-        )
-        self._shape_predictor = dlib.shape_predictor(
-            os.path.join(models_dir, "shape_predictor_5_face_landmarks.dat")
-        )
-        self._detector = dlib.get_frontal_face_detector()
-        logger.info("DlibEmbedder (ResNet 128-dim, raw) | jitters=%d", self.num_jitters)
+        model_path = cfg.face_recognizer_path
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"SFace model not found: {model_path}")
+        self._recognizer = cv2.FaceRecognizerSF.create(model_path, "")
+        logger.info("SFaceEmbedder (128-dim, L2, native OpenCV 5) | %s", model_path)
 
     def embed(self, frame_bgr: np.ndarray, detection: FaceDetection) -> np.ndarray:
-        rgb   = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rect  = self._dlib_box(rgb, detection.bbox)
-        shape = self._shape_predictor(rgb, rect)
-        enc   = self._face_encoder.compute_face_descriptor(rgb, shape, self.num_jitters)
-        return np.asarray(enc, dtype=np.float32)   # RAW — do NOT L2-normalise
-
-    def _dlib_box(self, rgb: np.ndarray, hint_bbox: Tuple[int, int, int, int]):
-        h, w = rgb.shape[:2]
-        dets = self._detector(rgb, 1)
-        if dets:
-            if hint_bbox is not None:
-                hx1, hy1, hx2, hy2 = hint_bbox
-
-                def _overlap(d) -> float:
-                    ix1 = max(hx1, d.left());  iy1 = max(hy1, d.top())
-                    ix2 = min(hx2, d.right()); iy2 = min(hy2, d.bottom())
-                    return max(0, ix2 - ix1) * max(0, iy2 - iy1)
-
-                return max(dets, key=_overlap)
-            return max(dets, key=lambda d: (d.right() - d.left()) * (d.bottom() - d.top()))
-
-        if hint_bbox is not None:
-            x1, y1, x2, y2 = hint_bbox
-            return dlib.rectangle(max(0, x1), max(0, y1), min(w - 1, x2), min(h - 1, y2))
-        return dlib.rectangle(0, 0, w - 1, h - 1)
+        aligned = self._recognizer.alignCrop(frame_bgr, detection.raw)
+        vec = self._recognizer.feature(aligned).flatten().astype(np.float32)
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else vec
 
 
-class MobileFaceNetEmbedder:
+class AuraFaceEmbedder:
     """
-    512-dim L2-normalised embeddings via ONNX MobileFaceNet.
+    512-dim L2-normalised embeddings via ONNX AuraFace (ArcFace-style R100).
 
-    Mirrors mock-server FaceEngine.embed: 5-point landmark alignment into the
-    112x112 ArcFace pose (falls back to a margin crop + resize when no
-    landmarks are available, e.g. detector=dlib), BGR->RGB, (x-127.5)/128.
+    Mirrors mock-server FaceEngine.embed (auraface path): 5-point landmark
+    alignment into the 112x112 ArcFace pose (falls back to a margin crop +
+    resize if the warp fails), BGR->RGB, (x-127.5)/128.
     """
 
     DIM         = 512
     INPUT_SIZE  = 112
     CROP_MARGIN = 0.20
 
-    # ArcFace/MobileFaceNet 112x112 reference landmarks
+    # ArcFace/AuraFace 112x112 reference landmarks
     _REF_LANDMARKS = np.array(
         [
             [38.2946, 51.6963],
@@ -529,14 +389,14 @@ class MobileFaceNetEmbedder:
     )
 
     def __init__(self, cfg: Config):
-        model_path = cfg.mobilefacenet_model
+        model_path = cfg.face_recognizer_auraface_path
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"MobileFaceNet model not found: {model_path}")
+            raise FileNotFoundError(f"AuraFace model not found: {model_path}")
         self._session    = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
         self._input_name = self._session.get_inputs()[0].name
         out_shape        = self._session.get_outputs()[0].shape
         self.DIM         = out_shape[-1] if out_shape else 512
-        logger.info("MobileFaceNetEmbedder (%d-dim, L2) | %s", self.DIM, model_path)
+        logger.info("AuraFaceEmbedder (%d-dim, L2, R100) | %s", self.DIM, model_path)
 
     def embed(self, frame_bgr: np.ndarray, detection: FaceDetection) -> np.ndarray:
         face_img = self._crop_and_align(frame_bgr, detection)
@@ -741,14 +601,14 @@ class ServerClient:
 
     def _post(self, vector: np.ndarray) -> Dict:
         # 6 decimal places is intentional and provably safe here, not an
-        # oversight. Embeddings are L2-normalised (or small-magnitude raw dlib
-        # descriptors), so components sit well inside [-1, 1]. Measured over 2000
-        # random 512-d unit vectors, %.6f rounding gives at most ~5e-7 per
-        # component and ~7e-6 whole-vector L2 error, shifting the server's L2
-        # match distance by <=1.5e-6, which is six orders of magnitude below the 0.8
-        # match threshold, and it never changed a nearest-neighbour pick. Full
-        # float32 round-trip would need ~9 significant figures; it buys nothing
-        # for matching and only enlarges the payload.
+        # oversight. Embeddings are L2-normalised, so components sit well
+        # inside [-1, 1]. Measured over 2000 random 512-d unit vectors, %.6f
+        # rounding gives at most ~5e-7 per component and ~7e-6 whole-vector L2
+        # error, shifting the server's L2 match distance by <=1.5e-6, which is
+        # six orders of magnitude below the 0.8 match threshold, and it never
+        # changed a nearest-neighbour pick. Full float32 round-trip would need
+        # ~9 significant figures; it buys nothing for matching and only
+        # enlarges the payload.
         vec_str = ",".join(f"{v:.6f}" for v in vector.flatten())
         try:
             resp = self._session.post(
@@ -762,11 +622,12 @@ class ServerClient:
             return {"error": str(e), "status_code": e.response.status_code if e.response else None}
         except requests.RequestException as e:
             return {"error": str(e)}
-    
-    # NOTE: the mock server accepts BOTH a 128-dim dlib vector and a 512-dim
-    # mobilefacenet vector, so a 400 "dimensions" error here means the vector is
-    # neither (e.g. a mismatched detector/embedder pairing, or a non-standard
-    # model), not "wrong model for this server".
+
+    # NOTE: the server enrols vectors from exactly one embedder at a time
+    # (models.embedder_model in its config.yaml), so a 400 "dimensions" error
+    # here means this client's embedder.model doesn't match the server's —
+    # e.g. this client sent sface (128-dim) but the server is enrolled with
+    # auraface (512-dim), or vice versa.
     def identify(self, embedding: np.ndarray) -> Optional[str]:
         result = self._post(embedding)
         if "error" in result:
@@ -774,9 +635,9 @@ class ServerClient:
             if result.get("status_code") == 400 and "dimensions" in str(detail):
                 logger.error(
                 "The server rejected the vector dimension (sent %d-dim). Make sure "
-                "detection.detector and embedder.model form a valid pair: dlib+dlib "
-                "(128-dim) or yunet+mobilefacenet (512-dim). The config.yaml / "
-                "config.yunet.yaml presets are already paired correctly.",
+                "this client's embedder.model matches the server's models.embedder_model: "
+                "sface (128-dim) or auraface (512-dim). The config.yaml / "
+                "config.auraface.yaml presets are already set up for each.",
                 embedding.shape[0],
                 )
             else:
@@ -1050,19 +911,16 @@ def _run(args, cfg: Config) -> None:
 
     # ── Load models (all settings from config) ───────────────
     try:
-        if cfg.detector_backend == "dlib":
-            detector = DlibFaceDetector(cfg)
-        else:
-            detector = YuNetDetector(cfg)
+        detector = FaceDetector(cfg)
 
-        if cfg.embedder_model == "dlib":
-            embedder = DlibEmbedder(cfg)
+        if cfg.embedder_model == "auraface":
+            embedder = AuraFaceEmbedder(cfg)
         else:
-            embedder = MobileFaceNetEmbedder(cfg)
+            embedder = SFaceEmbedder(cfg)
 
         logger.info(
-            "Detector: %s  |  Embedder: %s (%d-dim)",
-            cfg.detector_backend, cfg.embedder_model, embedder.DIM,
+            "Detector: YuNet  |  Embedder: %s (%d-dim)",
+            cfg.embedder_model, embedder.DIM,
         )
     except ClientError:
         raise

@@ -7,7 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # Run the face-recognition client's LIVE CAMERA mode under Podman
 # (team standard — not Docker), with the host's cameras and X
 # display forwarded in. Builds the image first if it isn't built
-# yet. Uses the default config.yaml (dlib model).
+# yet. Uses the default config.yaml (sface model).
 #
 # Needs an X server (Linux desktop). For single-image identify you
 # don't need this or a container at all — see the README's native
@@ -22,7 +22,7 @@ command -v podman >/dev/null 2>&1 || die "podman not found. Run ./build.sh first
 
 # Build the image on first run (or if it was removed).
 if ! podman image exists face-recognition; then
-    log "Image 'face-recognition' not found — building it now (first time: ~10-15 min)."
+    log "Image 'face-recognition' not found — building it now."
     ./build.sh
 fi
 

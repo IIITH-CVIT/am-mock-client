@@ -4,16 +4,17 @@
 # ┌─────────────────────────────────────────────────────────────────────────┐
 # │ WHICH FACE MODEL?                                                        │
 # │                                                                         │
-# │ This client can recognise faces with one of two models. The mock server │
-# │ enrols BOTH for every registration, so either works out of the box:     │
+# │ Detection is always YuNet (cv2.FaceDetectorYN, native OpenCV 5). Only    │
+# │ the embedder varies, and must match whatever the server is enrolled     │
+# │ with (models.embedder_model in its config.yaml):                        │
 # │                                                                         │
-# │   • dlib                  → the DEFAULT (set below). 128-dim.            │
-# │   • YuNet + MobileFaceNet  → the alternate. 512-dim.                     │
+# │   • sface                 → the DEFAULT (set below). 128-dim.            │
+# │   • auraface (R100)        → the alternate. 512-dim.                     │
 # │                                                                         │
-# │ To switch to YuNet + MobileFaceNet you have two options:                │
+# │ To switch to auraface you have two options:                             │
 # │   1. Easiest — run with the ready-made preset instead of editing:       │
-# │        .venv/bin/python client.py --config config.yunet.yaml <image>    │
-# │   2. Or edit the two lines marked "SWITCH HERE" further down.           │
+# │        .venv/bin/python client.py --config config.auraface.yaml <image> │
+# │   2. Or edit the line marked "SWITCH HERE" further down.                │
 # └─────────────────────────────────────────────────────────────────────────┘
 
 # ── Active mode ────────────────────────────────────────────────
@@ -37,23 +38,20 @@ diagnostic:
 
 # ── Model paths (relative paths resolve against this file's dir) ─
 models:
-  yunet: ./models/face_detection_yunet_2023mar.onnx
-  mobilefacenet: ./models/mobilefacenet.onnx
+  face_detector_path: ./models/face_detection_yunet_2026may.onnx
+  face_recognizer_path: ./models/face_recognition_sface_2021dec.onnx
+  face_recognizer_auraface_path: ./models/aurar100.onnx
 
-# ── Face detection ─────────────────────────────────────────────
+# ── Face detection (YuNet, native OpenCV 5 — cv2.FaceDetectorYN) ─
 detection:
-  detector: dlib                  # <<< SWITCH HERE: dlib  (or "yunet" for the alternate)
-  threshold: 0.3                  # detector confidence (dlib default 0.3, yunet default 0.5)
-  input_size: 640                 # yunet letterbox size — higher finds smaller faces, slower
-  num_upsamples: 1                # dlib only — higher finds smaller faces, slower
+  threshold: 0.5                  # detector confidence (YuNet default 0.5)
+  input_size: 640                 # initial square size; each frame's real size is set at detect-time
 
 # ── Embedding extraction ───────────────────────────────────────
-# Keep this paired with the detector above: dlib+dlib, or yunet+mobilefacenet.
-# Never mix them — the server stores one vector per model and matches by which
-# one you send.
+# Must match whatever the server is enrolled with (models.embedder_model in
+# its config.yaml). Never mix them — the server matches by vector dimension.
 embedder:
-  model: dlib                     # <<< SWITCH HERE: dlib  (or "mobilefacenet" for the alternate)
-  num_jitters: 1                  # dlib only — >1 = more stable embeddings, slower
+  model: sface                    # <<< SWITCH HERE: sface (128-dim)  (or "auraface" for the 512-dim alternate)
 
 # ── Camera ────────────────────────────────────────────────────
 camera:

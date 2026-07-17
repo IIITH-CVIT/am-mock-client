@@ -1,0 +1,40 @@
+# Face Recognition Client — ALTERNATE preset: AuraFace (R100)
+#
+# Use this instead of config.yaml when the server is enrolled with the
+# 512-dim AuraFace (ArcFace-style R100) embedder instead of the default sface:
+#     .venv/bin/python client.py --config config.auraface.yaml <image>
+#
+# It talks to the SAME mock server (localhost:8000) as config.yaml — the only
+# difference is the embedder. Make sure the server's models.embedder_model is
+# also set to "auraface", since the server only enrols one model at a time.
+
+mode: server
+
+server:
+  url: "http://localhost:8000"    # same mock server as config.yaml
+  timeout: 10
+
+diagnostic:
+  db_path: ./diagnostic_mode/diagnostic.db
+  faces_dir: ./diagnostic_mode/faces
+  cosine_threshold: 0.6
+  topk: 3
+
+models:
+  face_detector_path: ./models/face_detection_yunet_2026may.onnx
+  face_recognizer_path: ./models/face_recognition_sface_2021dec.onnx
+  face_recognizer_auraface_path: ./models/aurar100.onnx
+
+detection:
+  threshold: 0.5
+  input_size: 640
+
+embedder:
+  model: auraface
+
+camera:
+  device: 0
+  frame_skip: 10
+
+logging:
+  level: INFO

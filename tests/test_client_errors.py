@@ -9,9 +9,9 @@ raises ``ClientError`` instead, so it can be exercised in-process with
 import numpy as np
 import pytest
 
-from client import (
-    ClientError,
-    Config,
+from face_client.errors import ClientError 
+from face_client.config import Config 
+from face_client.pipeline import (
     _detect_and_embed,
     _ensure_models,
     _load_image,

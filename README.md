@@ -84,7 +84,19 @@ Step-by-step detail (and the offline/diagnostic flow) is under
 
 ```
 Am-FaceRecognition-Client/
-├── client.py                # Main client (all logic)
+├── face_client/               # Importable package — all detection/recognition/server/db logic
+│   ├── __init__.py               # Public API: FaceRecognitionClient, Config, ClientError
+│   ├── config.py                  # config.yaml loader
+│   ├── detection.py                 # FaceDetector (YuNet)
+│   ├── embedders.py                  # SFaceEmbedder, AuraFaceEmbedder + registry
+│   ├── diagnostic_db.py                # Local SQLite face store
+│   ├── server_client.py                  # FRU server HTTP client
+│   ├── pipeline.py                         # FaceRecognitionClient (identify/register/list/camera)
+│   └── cli.py                                # Full argparse CLI (--server/--diag/--camera/...)
+├── client.py                  # Thin shim → face_client.cli.main() (full CLI, unchanged behavior)
+├── identify.py                # Minimal entry point — identify a face from an image path
+├── register.py                # Minimal entry point — register a name + image path
+├── delete.py                  # Minimal entry point — delete a registered face by face_id
 ├── config.yaml               # DEFAULT config — sface model, mock server :8000
 ├── config.auraface.yaml      # Alternate preset — AuraFace R100 (512-dim)
 ├── environment.yml           # Conda environment spec
@@ -97,6 +109,35 @@ Am-FaceRecognition-Client/
 │   └── faces/              # Saved face crops from --register
 └── README.md
 ```
+
+### Minimal integration (`identify.py` / `register.py` / `delete.py`)
+
+For embedding this client into another application, `face_client` is a plain
+importable package — no CLI required:
+
+```python
+from face_client import FaceRecognitionClient
+
+client = FaceRecognitionClient()      # loads config.yaml from the repo root
+client.identify("photo.jpg")          # detect + embed + identify, prints the result
+client.register("Alice", "alice.jpg") # detect + embed + store in the local diagnostic DB
+client.delete_face(1)                 # remove a registered face by its face_id
+```
+
+This is exactly what the three bundled entry-point scripts do:
+
+| Script | Calls | Usage |
+|---|---|---|
+| `identify.py` | `client.identify(image_path)` | `python identify.py alice.jpg` |
+| `register.py` | `client.register(name, image_path)` | `python register.py Alice alice.jpg` |
+| `delete.py` | `client.delete_face(face_id)` | `python delete.py 1` (get the ID from `--list`) |
+
+Each accepts its arguments either hardcoded directly in the file or passed on the
+command line — whichever is more convenient to edit. `FaceRecognitionClient` also
+exposes `.list_faces()` and `.run_camera()` for anything beyond these three actions;
+the full `--server`/`--diag`/`--camera`/`--register`/`--list`/`--delete` CLI
+(`client.py`) is unchanged and still available for the team's own testing/Podman
+workflows.
 
 ---
 
@@ -144,7 +185,7 @@ python3 -m pytest tests/test_server_client.py tests/test_client_errors.py tests/
 - `test_client_errors.py` — the `ClientError` error paths (missing image, no face detected, missing models).
 - `test_diagnostic_db.py` — local `DiagnosticDB` cosine search: best-match-above-threshold, top-K ordering, dimension-mismatch gating, and the empty-DB path.
 
-These import `client.py` directly and don't need a camera or a running server. `tests/test_containerfile.py` is separate: it requires Podman and a built `face-recognition` image (`./build.sh`) and skips automatically if Podman isn't installed.
+These import from the `face_client` package submodules directly (e.g. `face_client.config`, `face_client.diagnostic_db`, `face_client.server_client`, `face_client.pipeline`) and don't need a camera or a running server. `tests/test_containerfile.py` is separate: it requires Podman and a built `face-recognition` image (`./build.sh`) and skips automatically if Podman isn't installed.
 
 ---
 
@@ -313,6 +354,16 @@ Detects the face, saves a crop to `diagnostic_mode/faces/`, and stores the embed
 
 Total: 3 face(s)
 ```
+
+### Delete a registered face
+
+```bash
+.venv/bin/python client.py --delete 1
+```
+
+Removes the row from the local SQLite database and deletes its saved face crop.
+Get the `face_id` to delete from `--list` above. Deleting an ID that doesn't
+exist prints `>>> No face found with face_id=<id>` rather than erroring.
 
 ---
 

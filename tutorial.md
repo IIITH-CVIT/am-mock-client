@@ -17,6 +17,7 @@ A Python client that detects a face (in a photo or live camera feed) and recogni
 ---
 
 ## 2. Set up the client
+
 Go to the command line interface and type the following command:
 
 ```bash
@@ -25,13 +26,59 @@ Go to the command line interface and type the following command:
 
 ---
 
-## 3. Identify a photo (against the server)
+## 3. Using the minimal scripts (`identify.py` / `register.py` / `delete.py`)
 
-Use a photo of someone you registered on the server:
+The simplest way to use the client — three small files at the repo root, each
+doing one thing. Edit the values directly in the file, or pass them on the
+command line — either works.
 
-Go to the command line interface and type the following command:
+**Register a face:**
 
 ```bash
+.venv/bin/python register.py Alice alice.jpg
+```
+
+**Identify a face:**
+
+```bash
+.venv/bin/python identify.py alice2.jpg
+```
+
+Expected output (via the server, or the local diagnostic DB if the server's unreachable):
+
+```
+>>> Recognised: Alice Kumar
+```
+
+**Delete a registered face** (get the `face_id` from `--list` — see the CLI section below):
+
+```bash
+.venv/bin/python delete.py 1
+```
+
+Under the hood, each script just does this — the whole interface in one line:
+
+```python
+from face_client import FaceRecognitionClient
+
+client = FaceRecognitionClient()
+client.register("Alice", "alice.jpg")   # register.py
+client.identify("alice2.jpg")           # identify.py
+client.delete_face(1)                   # delete.py
+```
+
+---
+
+## 4. Using the full CLI (`client.py`)
+
+The same actions, plus a few extras (live camera, forcing server/diagnostic
+mode, switching config files), all through one command:
+
+```bash
+# Register
+.venv/bin/python client.py --register Alice alice.jpg
+
+# Identify against the server (auto-falls back to the local DB if unreachable)
 .venv/bin/python client.py --server alice.jpg
 ```
 
@@ -45,14 +92,18 @@ Expected output:
 >>> Recognised: Alice Kumar
 ```
 
----
-
-## 4. Other common commands
-
-**List locally registered faces:**
-
 ```bash
+# List everything registered locally
 .venv/bin/python client.py --list
+
+# Delete by face_id (from --list above)
+.venv/bin/python client.py --delete 1
+
+# Force diagnostic (local-only) mode
+.venv/bin/python client.py --diag alice.jpg
+
+# Live camera feed
+.venv/bin/python client.py --camera
 ```
 
 ---

@@ -9,7 +9,8 @@ against a throwaway SQLite file in a tmp dir — no server or camera needed.
 import numpy as np
 import pytest
 
-from client import Config, DiagnosticDB
+from face_client.config import Config 
+from face_client.diagnostic_db import DiagnosticDB
 
 
 def _db(tmp_path, threshold=0.5, topk=3):
@@ -78,10 +79,10 @@ def test_dim_mismatch_warns_once_from_search_not_topk(tmp_path):
     query = np.ones(512, dtype=np.float32)
 
     with pytest.MonkeyPatch.context() as mp:
-        import client as client_mod
+        import face_client.diagnostic_db as db_mod 
 
         calls = []
-        mp.setattr(client_mod.logger, "warning", lambda *a, **k: calls.append(a))
+        mp.setattr(db_mod.logger, "warning", lambda *a, **k: calls.append(a))
         db.search(query)
         db.search_topk(query)
         assert len(calls) == 1

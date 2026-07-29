@@ -34,6 +34,7 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
     "camera": {
         "device": 0,
         "frame_skip": 10,
+        "backend": "opencv",
     },
     "logging": {
         "level": "INFO",
@@ -165,6 +166,10 @@ class Config:
     @property
     def camera_frame_skip(self) -> int:
         return int(self.get("camera.frame_skip", 10))
+    
+    @property
+    def camera_backend(self) -> str:
+        return str(self.get("camera.backend", "opencv")).lower()
 
     @property
     def log_level(self) -> int:

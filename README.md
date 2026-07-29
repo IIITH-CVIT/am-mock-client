@@ -208,6 +208,39 @@ For single-image identify/register/list (`--server photo.jpg`, `--register`, `--
 ```
 This is the simpler path for testing against the mock server. The Podman camera/X11 setup is only worth the overhead if you specifically need live-camera testing.
 
+### Running on Raspberry Pi 5 (libcamera-only cameras)
+
+Raspberry Pi 5's CSI camera hardware only works through **libcamera** — there is
+no legacy V4L2 camera mode on this hardware, so `cv2.VideoCapture(device)`
+cannot read frames from it (it may still report the camera as "open" while
+every frame read fails). For this case, `--camera` mode needs a different
+capture backend:
+
+```bash
+sudo apt install -y python3-picamera2
+```
+
+`picamera2`'s libcamera bindings must match the system's own libcamera build,
+so it isn't pip-installable in isolation — create the client's venv with
+`--system-site-packages` so it can see the apt-installed package (or just use
+the system Python directly, skipping the venv):
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Then set `camera.backend: picamera2` in `config.yaml` and run as usual:
+
+```bash
+.venv/bin/python client.py --camera
+```
+
+This only affects live-camera mode. `identify.py`/`register.py`/`delete.py`,
+`--server`/`--diag`/`--register`/`--list`/`--delete`, and the Podman workflow
+(`./run.sh`) are all unaffected and continue to work exactly as documented
+elsewhere — none of them touch the camera.
+
 ## Configuration
 
 All settings live in `config.yaml` (the default, sface model). Edit this file before
@@ -242,6 +275,7 @@ embedder:
 camera:
   device: 0                          # camera device index (0 = default webcam)
   frame_skip: 10                     # run recognition every N frames
+  backend: opencv                    # opencv (default) | picamera2 (Raspberry Pi 5 / libcamera-only cameras)
 
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR

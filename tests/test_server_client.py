@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 import numpy as np 
-from client import ServerClient, Config 
+from face_client.server_client import ServerClient
+from face_client.config import Config
 
 def _client_with_mocked_post(response_json):
     cfg = Config.__new__(Config)
@@ -51,7 +52,7 @@ def test_identify_logs_dimension_mismatch_guidance():
     }
     client = _client_with_mocked_post(response_400)
 
-    with patch("client.logger") as mock_logger:
+    with patch("face_client.server_client.logger") as mock_logger:
         result = client.identify(np.zeros(128, dtype=np.float32))
         assert result is None
         error_calls = [str(c) for c in mock_logger.error.call_args_list]
@@ -62,7 +63,7 @@ def test_identify_logs_dimension_mismatch_guidance():
 def test_identify_generic_error_does_not_trigger_dimension_guidance():
     response_500 = {"error": "500 Server Error", "status_code": 500}
     client = _client_with_mocked_post(response_500)
-    with patch("client.logger") as mock_logger:
+    with patch("face_client.server_client.logger") as mock_logger:
         client.identify(np.zeros(512, dtype=np.float32))
         assert mock_logger.error.call_count == 0
         assert mock_logger.warning.call_count == 1

@@ -92,17 +92,20 @@ def _open_picamera2_source(size=(640, 480)):
               "./run.sh Podman container, which cannot access libcamera."
           ) from e
     picam2 = Picamera2()
-    # BGR888 is requested explicitly because picamera2 returns that format in
-    # actual B,G,R memory order, matching cv2.imread()'s convention exactly. 
-    # No cv2.cvtColor needed. The unspecified/default format instead returns a
-    # 4-channel XBGR array, which would silently produce wrong-colored frames
-    # if fed straight into the detector/embedder without noticing.
+    # Despite the name, picamera2's "BGR888" format actually returns frames in
+    # R,G,B memory order (confirmed on real hardware — requesting it and
+    # skipping conversion produced blue-tinted "Smurf" faces, the classic
+    # symptom of swapped R/B channels). So we still request "BGR888" here (the
+    # unspecified/default format instead returns a 4-channel XBGR array, which
+    # is worse), but explicitly swap channels afterward to get real BGR order
+    # matching cv2.imread()'s convention, instead of trusting the format name.
     config = picam2.create_preview_configuration(main = {"format": "BGR888", "size": size})
     picam2.configure(config)
     picam2.start()
 
     def read():
-        return picam2.capture_array()
+        frame = picam2.capture_array()
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     
     def release():
         picam2.stop()

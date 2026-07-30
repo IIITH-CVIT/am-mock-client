@@ -57,6 +57,8 @@ embedder:
 camera:
   device: 0                      # camera device index (0 = default webcam)
   frame_skip: 10                 # run recognition every N frames
+  backend: opencv # opencv (default) | picamera2 (Raspberry Pi 5 / libcamera-only cameras. See README)
+
 
 # ── Logging ───────────────────────────────────────────────────
 logging:

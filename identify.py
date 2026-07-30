@@ -5,7 +5,7 @@ import sys
 import logging
 
 client = FaceRecognitionClient()
-image_path = sys.argv[1] if len(sys.argv) > 1 else "psp_photo.jpeg"
+image_path = sys.argv[1] if len(sys.argv) > 1 else "path/to/photo.jpeg"
 
 try:
     client.identify(image_path)

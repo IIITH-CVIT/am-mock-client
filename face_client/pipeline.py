@@ -66,6 +66,53 @@ def _detect_and_embed(frame: np.ndarray, detector, embedder,) -> Tuple[FaceDetec
     logger.info("Embedding: %d-dim", vec.shape[0])
     return detection, vec 
 
+def _open_opencv_source(device: int):
+    cap = cv2.VideoCapture(device)
+    if not cap.isOpened():
+        raise ClientError(f"Cannot open camera device: {device}")
+
+    def read():
+        ret, frame = cap.read()
+        return frame if ret else None 
+    
+    def release():
+        cap.release()
+    
+    return read, release
+
+def _open_picamera2_source(size=(640, 480)):
+    try:
+        from picamera2 import Picamera2
+    except ImportError as e:
+        raise ClientError("camera.backend is 'picamera2' but the picamera2 package is not importable.\n"
+              "Install it via apt (not pip): sudo apt install -y python3-picamera2\n"
+              "Then run this client with a Python that can see it, which is either the "
+              "system Python directly, or a venv created with "
+              "'python3 -m venv --system-site-packages .venv'.  NOT the isolated "
+              "./run.sh Podman container, which cannot access libcamera."
+          ) from e
+    picam2 = Picamera2()
+    # Despite the name, picamera2's "BGR888" format actually returns frames in
+    # R,G,B memory order (confirmed on real hardware — requesting it and
+    # skipping conversion produced blue-tinted "Smurf" faces, the classic
+    # symptom of swapped R/B channels). So we still request "BGR888" here (the
+    # unspecified/default format instead returns a 4-channel XBGR array, which
+    # is worse), but explicitly swap channels afterward to get real BGR order
+    # matching cv2.imread()'s convention, instead of trusting the format name.
+    config = picam2.create_preview_configuration(main = {"format": "BGR888", "size": size})
+    picam2.configure(config)
+    picam2.start()
+
+    def read():
+        frame = picam2.capture_array()
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    
+    def release():
+        picam2.stop()
+        picam2.close()
+    
+    return read, release
+
 # High level client
 
 class FaceRecognitionClient:
@@ -210,11 +257,16 @@ class FaceRecognitionClient:
         cfg = self.cfg
         device = cfg.camera_device
         frame_skip = cfg.camera_frame_skip
+        backend = cfg.camera_backend
 
-        cap = cv2.VideoCapture(device)
-        if not cap.isOpened():
-            raise ClientError(f"Cannot open camera device {device}")
-        logger.info("Camera %d opened | frame_skip=%d | embedder=%d-dim", device, frame_skip, embedder.DIM)
+        if backend == "picamera2":
+            read_frame, release_source = _open_picamera2_source()
+            logger.info("Camera backend=picamera2 | frame_skip=%d | embedder=%d-dim", frame_skip, embedder.DIM)
+        elif backend == "opencv":
+            read_frame, release_source = _open_opencv_source(device)
+            logger.info("Camera %d opened | frame_skip=%d | embedder=%d-dim", device, frame_skip, embedder.DIM)
+        else:
+            raise ClientError(f"Unknown camera.backend '{backend}' (expected 'opencv' or 'picamera2')")
 
         use_server = False
         server_client = None
@@ -240,9 +292,9 @@ class FaceRecognitionClient:
         
         try:
             while True:
-                ret, frame = cap.read()
-                if not ret:
-                    logger.error("Failed to read frame from camera %d", device)
+                frame = read_frame()
+                if frame is None:
+                    logger.error("Failed to read frame from camera (backend = %s)", backend)
                     break
 
                 frame_no += 1
@@ -273,7 +325,7 @@ class FaceRecognitionClient:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
         finally:
-            cap.release()
+            release_source()
             cv2.destroyAllWindows()
             if server_client:
                 server_client.close()

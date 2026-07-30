@@ -35,25 +35,26 @@ command line — either works.
 **Register a face:**
 
 ```bash
-.venv/bin/python register.py Alice alice.jpg
+.venv/bin/python register.py <Name> path/to/photo.jpg
 ```
 
 **Identify a face:**
 
 ```bash
-.venv/bin/python identify.py alice2.jpg
+.venv/bin/python identify.py path/to/photo.jpg
 ```
 
 Expected output (via the server, or the local diagnostic DB if the server's unreachable):
 
 ```
->>> Recognised: Alice Kumar
+>>> Recognised: <Name>
 ```
 
-**Delete a registered face** (get the `face_id` from `--list` — see the CLI section below):
+**Delete a registered face**:
 
 ```bash
-.venv/bin/python delete.py 1
+.venv/bin/python client.py --list
+.venv/bin/python delete.py <face_id>
 ```
 
 Under the hood, each script just does this — the whole interface in one line:
@@ -76,10 +77,10 @@ mode, switching config files), all through one command:
 
 ```bash
 # Register
-.venv/bin/python client.py --register Alice alice.jpg
+.venv/bin/python client.py --register <Name> path/to/photo.jpg
 
 # Identify against the server (auto-falls back to the local DB if unreachable)
-.venv/bin/python client.py --server alice.jpg
+.venv/bin/python client.py --server path/to/photo.jpg
 ```
 
 Expected output:
@@ -108,9 +109,24 @@ Expected output:
 
 ---
 
-## 5. Point at a different server (optional)
+## 5. Other `config.yaml` settings (optional)
 
-The client defaults to the mock server at `http://localhost:8000`. To use a real `am-master-server`, edit `server.url` in `config.yaml`.
+- **Point at a different server**: the client defaults to the mock server at
+  `http://localhost:8000`. To use a real `am-master-server`, edit `server.url`
+  in `config.yaml`.
+
+- **Switch camera backend**: if you change what hardware `--camera` mode runs
+  on, edit `camera.backend` — `opencv` (default, works for USB/laptop
+  webcams) or `picamera2` (Raspberry Pi 5, or any libcamera-only CSI camera —
+  see README's "Running on Raspberry Pi 5" section for the one-time setup this
+  needs).
+
+- **Switch embedder model**: to change what embeddings the client produces,
+  edit `embedder.model` — `sface` (default, 128-dim) or `auraface` (512-dim).
+  This **must match** whatever the server is enrolled with — the two ready-made
+  presets already exist so you don't need to hand-edit this: run with
+  `--config config.auraface.yaml` instead of editing `config.yaml` directly if
+  you need the `auraface` model.
 
 ---
 

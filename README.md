@@ -241,6 +241,59 @@ This only affects live-camera mode. `identify.py`/`register.py`/`delete.py`,
 (`./run.sh`) are all unaffected and continue to work exactly as documented
 elsewhere — none of them touch the camera.
 
+### Testing the client on one machine against a server on another
+
+A common setup: the client runs on a Raspberry Pi, but the mock server runs on
+a laptop on the same network (e.g. when the server has no ARM build, or it's
+just more convenient to run it somewhere with a browser for its web UI).
+
+**1. Point the client at the server's LAN IP.** Find the server machine's real
+network-facing IP (not a Docker/Podman bridge address like `172.17.0.1` —
+those are virtual and only reachable from that same host):
+```bash
+ip route get 1.1.1.1 | grep -oP 'src \K\S+'
+```
+Then set it in `config.yaml` on the client machine:
+```yaml
+server:
+  url: "http://<server-machine-IP>:8000"
+```
+
+**2. Confirm basic reachability** from the client machine:
+```bash
+ping -c 3 <server-machine-IP>
+curl http://<server-machine-IP>:8000/health
+```
+If `ping` works but `curl` fails to connect (not a timeout — an instant
+refusal), check the server machine's firewall first (`sudo ufw status`; if
+active, `sudo ufw allow 8000/tcp`).
+
+**3. If the firewall isn't the cause, suspect client isolation.** Some WiFi
+setups — notably **iOS Personal Hotspot** — isolate connected devices from
+reaching each other directly, even on the same subnet, while still allowing
+`ping` through. The tell: `sudo tcpdump -i any port 8000 -n` on the server
+machine shows **zero packets arriving** when the client tries to connect —
+proving the connection attempt never even reaches that machine, ruling out
+anything on it (firewall, the server process, etc.) and pointing at the
+network path itself.
+
+**Workaround — tunnel through SSH instead of relying on the hotspot's
+routing**, using whatever SSH connection already exists between the two
+machines. On the machine initiating the SSH connection **to** the client
+machine, add a remote port-forward:
+```bash
+ssh -R 8000:localhost:8000 <user>@<client-machine>
+```
+This forwards `localhost:8000` on the *client* machine back through the SSH
+tunnel to `localhost:8000` on the *server* machine. Then set `config.yaml` on
+the client machine back to:
+```yaml
+server:
+  url: "http://localhost:8000"
+```
+and everything routes through the tunnel instead of the hotspot's direct
+device-to-device path.
+
 ## Configuration
 
 All settings live in `config.yaml` (the default, sface model). Edit this file before

@@ -36,5 +36,9 @@ camera:
   device: 0
   frame_skip: 10
 
+kiosk:
+  timeout_seconds: 15
+  frame_skip: 1
+
 logging:
   level: INFO

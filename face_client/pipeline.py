@@ -1,5 +1,6 @@
 import logging 
 import os 
+import signal 
 import time     
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional 
@@ -65,6 +66,46 @@ def _detect_and_embed(frame: np.ndarray, detector, embedder,) -> Tuple[FaceDetec
     vec = embedder.embed(frame, detection)
     logger.info("Embedding: %d-dim", vec.shape[0])
     return detection, vec 
+
+def _kiosk_identify_loop(read_frame, detector, embedder, identify_fn, deadline: float, *, frame_skip: int = 1, now = time.monotonic, should_stop = lambda: False, max_consecutive_read_failures: int = 30) -> Optional[str]:
+    """
+    Poll frames until identify_fn() resolves a name, the deadline passes, or
+    should_stop() flips True (how a signal handler interrupts this from
+    identify_kiosk()). Pure/dependency-injected on purpose — no camera, no
+    ServerClient/DiagnosticDB here — so it's testable with fakes alone.
+    """
+
+    frame_no = 0
+    consecutive_failures = 0
+
+    while now() < deadline:
+        if should_stop():
+            return None 
+        
+        frame = read_frame()
+        if frame is None:
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_read_failures:
+                raise ClientError("Camera stopped returning frames")
+            continue 
+        consecutive_failures = 0
+
+        frame_no += 1
+        if frame_no % frame_skip != 0:
+            continue
+            
+        detection = detector.detect(frame)
+
+        if detection is None:
+            continue
+            
+        vec = embedder.embed(frame, detection)
+        name = identify_fn(vec)
+        
+        if name:
+            return name
+    
+    return None
 
 def _open_opencv_source(device: int):
     cap = cv2.VideoCapture(device)

@@ -97,6 +97,7 @@ Am-FaceRecognition-Client/
 ├── identify.py                # Minimal entry point — identify a face from an image path
 ├── register.py                # Minimal entry point — register a name + image path
 ├── delete.py                  # Minimal entry point — delete a registered face by face_id
+├── kiosk.py                   # Bounded single-shot entry point — exit-code contract for the Pi kiosk integration
 ├── config.yaml               # DEFAULT config — sface model, mock server :8000
 ├── config.auraface.yaml      # Alternate preset — AuraFace R100 (512-dim)
 ├── environment.yml           # Conda environment spec
@@ -131,6 +132,7 @@ This is exactly what the three bundled entry-point scripts do:
 | `identify.py` | `client.identify(image_path)` | `python identify.py alice.jpg` |
 | `register.py` | `client.register(name, image_path)` | `python register.py Alice alice.jpg` |
 | `delete.py` | `client.delete_face(face_id)` | `python delete.py 1` (get the ID from `--list`) |
+| `kiosk.py` | `client.identify_kiosk(timeout=...)` | `.venv/bin/python kiosk.py [seconds]` — exits `0`/`1`/`2`, see [Kiosk mode](#kiosk-mode) |
 
 Each accepts its arguments either hardcoded directly in the file or passed on the
 command line — whichever is more convenient to edit. `FaceRecognitionClient` also
@@ -138,6 +140,11 @@ exposes `.list_faces()` and `.run_camera()` for anything beyond these three acti
 the full `--server`/`--diag`/`--camera`/`--register`/`--list`/`--delete` CLI
 (`client.py`) is unchanged and still available for the team's own testing/Podman
 workflows.
+
+`kiosk.py` is built differently from the other three on purpose: it's meant to
+be called by an external bash script, not a person, so it translates the
+result into an **exit code** (`0`/`1`/`2`) instead of just printing — see
+[Kiosk mode](#kiosk-mode) below for the full contract.
 
 ---
 
@@ -178,12 +185,13 @@ conda activate face-recognition
 ### Running the tests
 
 ```bash
-python3 -m pytest tests/test_server_client.py tests/test_client_errors.py tests/test_diagnostic_db.py
+python3 -m pytest tests/test_server_client.py tests/test_client_errors.py tests/test_diagnostic_db.py tests/test_pipeline_kiosk.py
 ```
 
 - `test_server_client.py` — server response parsing (`IdentifyResponse` field names, error/dimension-mismatch handling).
 - `test_client_errors.py` — the `ClientError` error paths (missing image, no face detected, missing models).
 - `test_diagnostic_db.py` — local `DiagnosticDB` cosine search: best-match-above-threshold, top-K ordering, dimension-mismatch gating, and the empty-DB path.
+- `test_pipeline_kiosk.py` — the kiosk-mode recognition loop and `identify_kiosk()`'s camera-release guarantee on every exit path (match, timeout, exception, signal), via fakes — no real camera or signals needed.
 
 These import from the `face_client` package submodules directly (e.g. `face_client.config`, `face_client.diagnostic_db`, `face_client.server_client`, `face_client.pipeline`) and don't need a camera or a running server. `tests/test_containerfile.py` is separate: it requires Podman and a built `face-recognition` image (`./build.sh`) and skips automatically if Podman isn't installed.
 
@@ -451,6 +459,61 @@ Total: 3 face(s)
 Removes the row from the local SQLite database and deletes its saved face crop.
 Get the `face_id` to delete from `--list` above. Deleting an ID that doesn't
 exist prints `>>> No face found with face_id=<id>` rather than erroring.
+
+---
+
+## Kiosk mode
+
+A bounded, single-shot recognition pass built for external orchestration — a
+Raspberry Pi kiosk where a hardware presence sensor triggers this client, and
+the kiosk's own "main algorithm" needs **the same camera device** immediately
+afterward. Because of that, `kiosk.py` never pauses or holds the camera open:
+it opens it once, tries to recognize a face until either a match is found or
+a timeout elapses, then **always** releases the camera before exiting —
+including if the caller kills it with `SIGTERM`/`SIGINT`.
+
+```bash
+.venv/bin/python kiosk.py         # timeout from config.yaml's kiosk.timeout_seconds
+.venv/bin/python kiosk.py 20      # override to 20 seconds for this run
+```
+
+**Parse the exit code, not stdout text:**
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Face recognized — the name is the *only* line on stdout |
+| `1` | No match within the timeout (unknown face, no face at all, or interrupted by `SIGTERM`/`SIGINT` — all treated the same) |
+| `2` | Hardware/model error (camera not found, `.onnx` model missing, etc.) |
+
+Bash example — capture `$?` immediately, before any other command runs:
+```bash
+if name=$(.venv/bin/python kiosk.py); then
+    echo "Recognized: $name"
+    # ... hand off to the kiosk's own main algorithm here, same camera device ...
+else
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+        echo "Hardware/model error — check camera/models" >&2
+    else
+        echo "No one recognized within the timeout"
+    fi
+fi
+```
+
+Config (`config.yaml` / `config.auraface.yaml`):
+
+```yaml
+kiosk:
+  timeout_seconds: 15   # give up and exit 1 if nobody is recognized within this many seconds
+  frame_skip: 1          # run recognition every N frames (1 = every frame)
+```
+
+- `timeout_seconds` is a placeholder — tune it with the kiosk team once their own algorithm's timing settles. Override it per-run instead of editing the file: `kiosk.py <seconds>`.
+- `frame_skip` is deliberately a separate knob from `camera.frame_skip` (used by `--camera` live monitoring, default `10`): that default trades latency for CPU headroom during a long-running background monitor, while kiosk mode is short and bounded — invoked only after a presence sensor already fired — so latency to the first match matters more than CPU here.
+
+Runs **natively** (`.venv/bin/python kiosk.py`, or the `--system-site-packages` venv on the Pi if using the `picamera2` backend) — never via `./run.sh`/Podman, same as the rest of live-camera mode; see "Running on Raspberry Pi 5" above for why the container can't do this.
+
+See `scripts/demo_kiosk_cycle.sh` for an end-to-end simulation of the full presence-detection → recognize → hand-off → repeat cycle (with the kiosk's own hardware/algorithm stubbed out).
 
 ---
 

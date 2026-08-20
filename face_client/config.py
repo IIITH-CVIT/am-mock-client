@@ -36,6 +36,10 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
         "frame_skip": 10,
         "backend": "opencv",
     },
+    "kiosk": {
+        "timeout_seconds": 15,
+        "frame_skip": 1,
+    },
     "logging": {
         "level": "INFO",
     },
@@ -170,6 +174,14 @@ class Config:
     @property
     def camera_backend(self) -> str:
         return str(self.get("camera.backend", "opencv")).lower()
+    
+    @property
+    def kiosk_timeout_seconds(self) -> float:
+        return float(self.get("kiosk.timeout_seconds", 15))
+    
+    @property 
+    def kiosk_frame_skip(self) -> int:
+        return int(self.get("kiosk.frame_skip", 1))
 
     @property
     def log_level(self) -> int:

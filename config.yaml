@@ -59,6 +59,25 @@ camera:
   frame_skip: 10                 # run recognition every N frames
   backend: opencv # opencv (default) | picamera2 (Raspberry Pi 5 / libcamera-only cameras. See README)
 
+# Kiosk mode (kiosk.py)
+# Used only by kiosk.py, the bounded, exit-code-driven, single-shot
+# recognition entry point for the Pi kiosk integration (see README).
+kiosk:
+  timeout_seconds: 15   # Give up and exit with code 1 if no one is
+                        # recognized within this many seconds.
+                        # Placeholder value can be tuned with the kiosk
+                        # team once their algorithm's timing is settled.
+                        # Can also be overridden per invocation via
+                        # `kiosk.py <seconds>` without editing config.yaml.
+
+  frame_skip: 1         # Run recognition every N frames (1 = every frame).
+                        # Deliberately separate from `camera.frame_skip`
+                        # (default: 10), which trades latency for CPU
+                        # headroom during long-running live monitoring.
+                        # Kiosk mode is short-lived and is only invoked
+                        # after the presence sensor has already fired, so
+                        # minimizing latency to the first successful match
+                        # is more important than reducing CPU usage.
 
 # ── Logging ───────────────────────────────────────────────────
 logging:

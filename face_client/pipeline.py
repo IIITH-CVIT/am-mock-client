@@ -1,5 +1,6 @@
 import logging 
 import os 
+import signal 
 import time     
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional 
@@ -65,6 +66,46 @@ def _detect_and_embed(frame: np.ndarray, detector, embedder,) -> Tuple[FaceDetec
     vec = embedder.embed(frame, detection)
     logger.info("Embedding: %d-dim", vec.shape[0])
     return detection, vec 
+
+def _kiosk_identify_loop(read_frame, detector, embedder, identify_fn, deadline: float, *, frame_skip: int = 1, now = time.monotonic, should_stop = lambda: False, max_consecutive_read_failures: int = 30) -> Optional[str]:
+    """
+    Poll frames until identify_fn() resolves a name, the deadline passes, or
+    should_stop() flips True (how a signal handler interrupts this from
+    identify_kiosk()). Pure/dependency-injected on purpose — no camera, no
+    ServerClient/DiagnosticDB here — so it's testable with fakes alone.
+    """
+
+    frame_no = 0
+    consecutive_failures = 0
+
+    while now() < deadline:
+        if should_stop():
+            return None 
+        
+        frame = read_frame()
+        if frame is None:
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_read_failures:
+                raise ClientError("Camera stopped returning frames")
+            continue 
+        consecutive_failures = 0
+
+        frame_no += 1
+        if frame_no % frame_skip != 0:
+            continue
+            
+        detection = detector.detect(frame)
+
+        if detection is None:
+            continue
+            
+        vec = embedder.embed(frame, detection)
+        name = identify_fn(vec)
+        
+        if name:
+            return name
+    
+    return None
 
 def _open_opencv_source(device: int):
     cap = cv2.VideoCapture(device)
@@ -251,6 +292,88 @@ class FaceRecognitionClient:
         else:
             print(f"\n>>> No face found with face_id={face_id}\n")
         return deleted
+    
+    def identify_kiosk(self, timeout: Optional[float] = None, frame_skip: Optional[int] = None) -> Optional[str]:
+        """
+        Bounded, single-shot recognition pass for the kiosk integration.
+
+        Opens the camera, tries to identify a face until either a match is
+        found or `timeout` seconds pass, then ALWAYS releases the camera
+        before returning — so an external caller (a bash script driven by a
+        presence sensor) can hand the same camera device to its own
+        "main algorithm" immediately afterward.
+
+        Returns the matched name, or None for "no match within the timeout"
+        OR "interrupted by SIGTERM/SIGINT" (both collapse to the same
+        result — the caller doesn't need to tell them apart). Raises
+        ClientError for a genuine hardware/model failure. Never calls
+        sys.exit itself — see errors.py's docstring for why.
+        """
+
+        cfg = self.cfg
+        timeout = float(timeout) if timeout is not None else cfg.kiosk_timeout_seconds
+        frame_skip = int(frame_skip) if frame_skip is not None else cfg.kiosk_frame_skip
+
+        detector, embedder = self._ensure_backend()
+        backend = cfg.camera_backend
+
+        if backend == "picamera2":
+            read_frame, release_source = _open_picamera2_source()
+        elif backend == "opencv":
+            read_frame, release_source = _open_opencv_source(cfg.camera_device)
+        else:
+            raise ClientError(f"Unknown camera.backend '{backend}' (expected 'opencv' or 'picamera2')")
+        
+        use_server = False
+        server_client = None 
+        diag_db = None 
+
+        if cfg.mode != "diagnostic":
+            server_client = ServerClient(cfg)
+            if server_client.health_check():
+                use_server = True 
+            else:
+                logger.warning("Server unreachable. Falling back to diagnostic (local SQLite).")
+                server_client.close()
+                server_client = None 
+        
+        if not use_server:
+            diag_db = DiagnosticDB(cfg)
+        
+        def identify_fn(vec):
+            if use_server:
+                return server_client.identify(vec)
+            name, _, _sim = diag_db.search(vec)
+            return name
+        
+        stop_flag = {"stop": False}
+
+        def _handle_signal(signum, frame):
+            stop_flag["stop"] = True
+        
+        # A Python signal handler only runs between bytecode instructions on
+        # the main thread — if read_frame() is blocked in a C-level camera
+        # read when the signal arrives, we only notice once that call
+        # returns (bounded to about one frame period). Acceptable here; not
+        # worth solving with threads.
+
+        prev_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+        prev_sigint = signal.signal(signal.SIGINT, _handle_signal)
+
+        try:
+            deadline = time.monotonic() + timeout 
+            try:
+                return _kiosk_identify_loop(read_frame, detector, embedder, identify_fn, deadline, frame_skip = frame_skip, should_stop = lambda: stop_flag["stop"])
+            except ClientError: # already the right shape, don't let it fall into the
+                raise           # `except Exception` below and get wrapped a second time 
+            except Exception as e:
+                raise ClientError(f"Kiosk recognition failed: {e}") from e
+        finally:
+            signal.signal(signal.SIGTERM, prev_sigterm)
+            signal.signal(signal.SIGINT, prev_sigint)
+            release_source()
+            if server_client:
+                server_client.close()
 
     def run_camera(self) -> None:
         detector, embedder = self._ensure_backend()
